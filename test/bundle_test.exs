@@ -96,8 +96,7 @@ defmodule OXC.BundleTest do
 
     test "emits alias for renamed export specifiers" do
       files = [
-        {"impl.ts",
-         "function greetImpl() { return 'hi' }\nexport { greetImpl as greet }"},
+        {"impl.ts", "function greetImpl() { return 'hi' }\nexport { greetImpl as greet }"},
         {"main.ts", "import { greet } from './impl'\n(globalThis as any).g = greet;"}
       ]
 
@@ -254,6 +253,32 @@ defmodule OXC.BundleTest do
       {:ok, js} = OXC.bundle(files, minify: true, drop_console: true)
       refute js =~ "console"
       assert js =~ "1"
+    end
+  end
+
+  describe "bundle/2 jsx options" do
+    test "transforms JSX with custom pragma" do
+      files = [{"app.jsx", "export const App = () => <div>hello</div>"}]
+      {:ok, js} = OXC.bundle(files, jsx: :classic, jsx_factory: "h")
+      assert js =~ "h("
+      refute js =~ "createElement"
+    end
+
+    test "transforms JSX with custom fragment" do
+      files = [{"app.jsx", "export const App = () => <><span /></>"}]
+
+      {:ok, js} =
+        OXC.bundle(files, jsx: :classic, jsx_factory: "h", jsx_fragment: "Fragment")
+
+      assert js =~ "Fragment"
+      refute js =~ "React"
+    end
+
+    test "defaults to automatic runtime" do
+      files = [{"app.jsx", "export const App = () => <div />"}]
+      {:ok, js} = OXC.bundle(files)
+      assert js =~ "jsx"
+      refute js =~ "createElement"
     end
   end
 

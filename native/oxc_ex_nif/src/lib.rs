@@ -97,12 +97,29 @@ fn valid(source: &str, filename: &str) -> bool {
     ret.errors.is_empty()
 }
 
+fn build_jsx_options(jsx_runtime: &str, jsx_factory: &str, jsx_fragment: &str) -> TransformOptions {
+    let mut options = TransformOptions::default();
+    options.jsx.runtime = match jsx_runtime {
+        "classic" => JsxRuntime::Classic,
+        _ => JsxRuntime::Automatic,
+    };
+    if !jsx_factory.is_empty() {
+        options.jsx.pragma = Some(jsx_factory.to_string());
+    }
+    if !jsx_fragment.is_empty() {
+        options.jsx.pragma_frag = Some(jsx_fragment.to_string());
+    }
+    options
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn transform<'a>(
     env: Env<'a>,
     source: &str,
     filename: &str,
     jsx_runtime: &str,
+    jsx_factory: &str,
+    jsx_fragment: &str,
 ) -> NifResult<Term<'a>> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(filename).unwrap_or_default();
@@ -126,11 +143,7 @@ fn transform<'a>(
         .semantic
         .into_scoping();
 
-    let mut options = TransformOptions::default();
-    options.jsx.runtime = match jsx_runtime {
-        "classic" => JsxRuntime::Classic,
-        _ => JsxRuntime::Automatic,
-    };
+    let options = build_jsx_options(jsx_runtime, jsx_factory, jsx_fragment);
 
     let result =
         Transformer::new(&allocator, path, &options).build_with_scoping(scoping, &mut program);
@@ -193,6 +206,7 @@ fn transform_module(
     allocator: &Allocator,
     source: &str,
     filename: &str,
+    transform_options: &TransformOptions,
 ) -> Result<(String, Vec<String>), Vec<String>> {
     let source_type = SourceType::from_path(filename).unwrap_or_default();
     let path = Path::new(filename);
@@ -226,7 +240,7 @@ fn transform_module(
         .semantic
         .into_scoping();
 
-    let result = Transformer::new(allocator, path, &TransformOptions::default())
+    let result = Transformer::new(allocator, path, transform_options)
         .build_with_scoping(scoping, &mut program);
 
     if !result.errors.is_empty() {
@@ -346,6 +360,9 @@ struct BundleOptions {
     define: Vec<(String, String)>,
     sourcemap: bool,
     drop_console: bool,
+    jsx_runtime: String,
+    jsx_factory: String,
+    jsx_fragment: String,
 }
 
 impl BundleOptions {
@@ -357,6 +374,9 @@ impl BundleOptions {
             define: Vec::new(),
             sourcemap: false,
             drop_console: false,
+            jsx_runtime: "automatic".to_string(),
+            jsx_factory: String::new(),
+            jsx_fragment: String::new(),
         };
 
         let minify_atom = rustler::types::atom::Atom::from_str(env, "minify").unwrap();
@@ -365,6 +385,9 @@ impl BundleOptions {
         let sourcemap_atom = rustler::types::atom::Atom::from_str(env, "sourcemap").unwrap();
         let drop_console_atom = rustler::types::atom::Atom::from_str(env, "drop_console").unwrap();
         let define_atom = rustler::types::atom::Atom::from_str(env, "define").unwrap();
+        let jsx_atom = rustler::types::atom::Atom::from_str(env, "jsx").unwrap();
+        let jsx_factory_atom = rustler::types::atom::Atom::from_str(env, "jsx_factory").unwrap();
+        let jsx_fragment_atom = rustler::types::atom::Atom::from_str(env, "jsx_fragment").unwrap();
 
         if let Ok(list) = term.decode::<Vec<(rustler::Atom, Term<'_>)>>() {
             for (key, val) in list {
@@ -378,6 +401,17 @@ impl BundleOptions {
                     opts.sourcemap = val.decode::<bool>().unwrap_or(false);
                 } else if key == drop_console_atom {
                     opts.drop_console = val.decode::<bool>().unwrap_or(false);
+                } else if key == jsx_atom {
+                    let classic = rustler::types::atom::Atom::from_str(env, "classic").unwrap();
+                    if let Ok(atom) = val.decode::<rustler::Atom>() {
+                        if atom == classic {
+                            opts.jsx_runtime = "classic".to_string();
+                        }
+                    }
+                } else if key == jsx_factory_atom {
+                    opts.jsx_factory = val.decode::<String>().unwrap_or_default();
+                } else if key == jsx_fragment_atom {
+                    opts.jsx_fragment = val.decode::<String>().unwrap_or_default();
                 } else if key == define_atom {
                     if let Ok(map) = val.decode::<HashMap<String, String>>() {
                         opts.define = map.into_iter().collect();
@@ -411,12 +445,14 @@ fn bundle<'a>(
     }
 
     // Transform each module and collect dependency info
+    let transform_options =
+        build_jsx_options(&opts.jsx_runtime, &opts.jsx_factory, &opts.jsx_fragment);
     let mut transformed: HashMap<String, String> = HashMap::new();
     let mut deps: HashMap<String, Vec<String>> = HashMap::new();
 
     for (key, (filename, source)) in &file_map {
         let allocator = Allocator::default();
-        match transform_module(&allocator, source, filename) {
+        match transform_module(&allocator, source, filename, &transform_options) {
             Ok((code, imports)) => {
                 transformed.insert(key.clone(), code);
                 deps.insert(key.clone(), imports);

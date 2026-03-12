@@ -206,6 +206,24 @@ defmodule OXCTest do
       refute js =~ "<div>"
     end
 
+    test "transforms JSX with custom pragma" do
+      {:ok, js} = OXC.transform("<div>hello</div>", "test.jsx", jsx: :classic, jsx_factory: "h")
+      assert js =~ "h("
+      refute js =~ "createElement"
+    end
+
+    test "transforms JSX with custom pragma and fragment" do
+      {:ok, js} =
+        OXC.transform("<><span /></>", "test.jsx",
+          jsx: :classic,
+          jsx_factory: "h",
+          jsx_fragment: "Fragment"
+        )
+
+      assert js =~ "Fragment"
+      refute js =~ "React"
+    end
+
     test "transforms TSX" do
       {:ok, js} = OXC.transform("const el: JSX.Element = <App />", "test.tsx")
       refute js =~ "JSX.Element"

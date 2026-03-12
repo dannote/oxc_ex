@@ -93,6 +93,8 @@ defmodule OXC do
   ## Options
 
     * `:jsx` — JSX runtime, `:automatic` (default) or `:classic`
+    * `:jsx_factory` — function for classic JSX (default: `"React.createElement"`)
+    * `:jsx_fragment` — fragment for classic JSX (default: `"React.Fragment"`)
 
   ## Examples
 
@@ -107,7 +109,9 @@ defmodule OXC do
   @spec transform(String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, [String.t()]}
   def transform(source, filename, opts \\ []) do
     jsx_runtime = opts |> Keyword.get(:jsx, :automatic) |> Atom.to_string()
-    OXC.Native.transform(source, filename, jsx_runtime)
+    jsx_factory = Keyword.get(opts, :jsx_factory, "")
+    jsx_fragment = Keyword.get(opts, :jsx_fragment, "")
+    OXC.Native.transform(source, filename, jsx_runtime, jsx_factory, jsx_fragment)
   end
 
   @doc """
@@ -190,6 +194,9 @@ defmodule OXC do
     * `:sourcemap` — generate a source map (default: `false`). When `true`,
       returns `%{code: String.t(), sourcemap: String.t()}` instead of a plain string.
     * `:drop_console` — remove `console.*` calls during minification (default: `false`)
+    * `:jsx` — JSX runtime, `:automatic` (default) or `:classic`
+    * `:jsx_factory` — function for classic JSX (default: `"React.createElement"`)
+    * `:jsx_fragment` — fragment for classic JSX (default: `"React.Fragment"`)
 
   ## Examples
 
