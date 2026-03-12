@@ -279,6 +279,8 @@ defmodule OXC do
     end
   end
 
+  # ── AST Traversal ──
+
   @doc """
   Walk an AST tree, calling `fun` on every node (any map with a `type` key).
 
@@ -309,6 +311,93 @@ defmodule OXC do
 
   defp walk_child(node, fun) when is_map(node), do: walk(node, fun)
   defp walk_child(_node, _fun), do: :ok
+
+  @doc """
+  Depth-first post-order traversal, like `Macro.postwalk/2`.
+
+  Visits every AST node (map with a `:type` key). Children are visited
+  first, then the node itself. The callback returns the (possibly modified)
+  node.
+
+  ## Examples
+
+      iex> {:ok, ast} = OXC.parse("const x = 1", "test.js")
+      iex> OXC.postwalk(ast, fn
+      ...>   %{type: "Identifier", name: "x"} = node -> %{node | name: "y"}
+      ...>   node -> node
+      ...> end)
+      iex> :ok
+      :ok
+  """
+  @spec postwalk(ast(), (map() -> map())) :: map()
+  def postwalk(node, fun) when is_map(node) and is_function(fun, 1) do
+    updated =
+      Map.new(node, fn
+        {k, child} when is_map(child) ->
+          {k, postwalk(child, fun)}
+
+        {k, children} when is_list(children) ->
+          {k,
+           Enum.map(children, fn
+             c when is_map(c) -> postwalk(c, fun)
+             c -> c
+           end)}
+
+        pair ->
+          pair
+      end)
+
+    if Map.has_key?(updated, :type), do: fun.(updated), else: updated
+  end
+
+  def postwalk(node, _fun) when not is_map(node), do: node
+
+  @doc """
+  Depth-first post-order traversal with accumulator, like `Macro.postwalk/3`.
+
+  The callback receives each AST node and the accumulator, and must return
+  `{node, acc}`. Use this to collect data while traversing.
+
+  ## Examples
+
+      iex> source = "import { ref } from 'vue'\\nimport a from './utils'"
+      iex> {:ok, ast} = OXC.parse(source, "test.ts")
+      iex> {_ast, patches} = OXC.postwalk(ast, [], fn
+      ...>   %{type: "ImportDeclaration", source: %{value: "vue"} = src} = node, patches ->
+      ...>     {node, [%{start: src.start, end: src.end, change: "'/@vendor/vue.js'"} | patches]}
+      ...>   node, patches ->
+      ...>     {node, patches}
+      ...> end)
+      iex> OXC.patch_string(source, patches)
+      "import { ref } from '/@vendor/vue.js'\\nimport a from './utils'"
+  """
+  @spec postwalk(ast(), acc, (map(), acc -> {map(), acc})) :: {map(), acc} when acc: term()
+  def postwalk(node, acc, fun) when is_map(node) and is_function(fun, 2) do
+    {updated, acc} =
+      Enum.reduce(Map.keys(node), {node, acc}, fn key, {n, a} ->
+        case Map.fetch!(n, key) do
+          child when is_map(child) ->
+            {new_child, a} = postwalk(child, a, fun)
+            {Map.put(n, key, new_child), a}
+
+          children when is_list(children) ->
+            {new_children, a} =
+              Enum.map_reduce(children, a, fn
+                child, a when is_map(child) -> postwalk(child, a, fun)
+                child, a -> {child, a}
+              end)
+
+            {Map.put(n, key, new_children), a}
+
+          _ ->
+            {n, a}
+        end
+      end)
+
+    if Map.has_key?(updated, :type), do: fun.(updated, acc), else: {updated, acc}
+  end
+
+  def postwalk(node, acc, _fun), do: {node, acc}
 
   @doc """
   Collect AST nodes that match a filter function.
@@ -344,5 +433,38 @@ defmodule OXC do
     after
       :ets.delete(acc)
     end
+  end
+
+  # ── Source Patching ──
+
+  @type patch :: %{start: non_neg_integer(), end: non_neg_integer(), change: String.t()}
+
+  @doc """
+  Apply patches to source code, like `Sourceror.patch_string/2`.
+
+  Each patch is a map with `:start` (byte offset), `:end` (byte offset),
+  and `:change` (replacement string). Patches are applied in reverse
+  offset order so that earlier patches don't shift later offsets.
+
+  Use with `postwalk/3` to collect patches from the AST, then apply
+  them to the original source string.
+
+  ## Examples
+
+      iex> OXC.patch_string("hello world", [%{start: 6, end: 11, change: "elixir"}])
+      "hello elixir"
+
+      iex> source = "import { ref } from 'vue'"
+      iex> OXC.patch_string(source, [%{start: 20, end: 25, change: "'/@vendor/vue.js'"}])
+      "import { ref } from '/@vendor/vue.js'"
+  """
+  @spec patch_string(String.t(), [patch()]) :: String.t()
+  def patch_string(source, patches) do
+    patches
+    |> Enum.uniq_by(fn %{start: s, end: e} -> {s, e} end)
+    |> Enum.sort_by(fn %{start: s} -> s end, :desc)
+    |> Enum.reduce(source, fn %{start: s, end: e, change: replacement}, acc ->
+      binary_part(acc, 0, s) <> replacement <> binary_part(acc, e, byte_size(acc) - e)
+    end)
   end
 end

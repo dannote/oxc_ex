@@ -395,6 +395,108 @@ defmodule OXCTest do
     end)
   end
 
+  describe "postwalk/2" do
+    test "visits all nodes" do
+      {:ok, ast} = OXC.parse("const x = 1", "test.js")
+      types = :ets.new(:types, [:bag, :private])
+
+      OXC.postwalk(ast, fn node ->
+        :ets.insert(types, {node.type})
+        node
+      end)
+
+      result = :ets.tab2list(types) |> Enum.map(&elem(&1, 0))
+      :ets.delete(types)
+
+      assert "Program" in result
+      assert "VariableDeclaration" in result
+      assert "Identifier" in result
+    end
+
+    test "returns modified tree" do
+      {:ok, ast} = OXC.parse("const x = 1", "test.js")
+
+      result =
+        OXC.postwalk(ast, fn
+          %{type: "Identifier", name: "x"} = node -> %{node | name: "y"}
+          node -> node
+        end)
+
+      [decl] = result.body
+      [declarator] = decl.declarations
+      assert declarator.id.name == "y"
+    end
+  end
+
+  describe "postwalk/3" do
+    test "collects data with accumulator" do
+      {:ok, ast} = OXC.parse("const x = y + z", "test.js")
+
+      {_ast, names} =
+        OXC.postwalk(ast, [], fn
+          %{type: "Identifier", name: name} = node, acc -> {node, [name | acc]}
+          node, acc -> {node, acc}
+        end)
+
+      assert Enum.sort(names) == ["x", "y", "z"]
+    end
+
+    test "collects patches for import rewriting" do
+      source = "import { ref } from 'vue'\nimport a from './utils'"
+      {:ok, ast} = OXC.parse(source, "test.ts")
+
+      {_ast, patches} =
+        OXC.postwalk(ast, [], fn
+          %{type: "ImportDeclaration", source: %{value: "vue"} = src} = node, patches ->
+            {node, [%{start: src.start, end: src.end, change: "'/@vendor/vue.js'"} | patches]}
+
+          node, patches ->
+            {node, patches}
+        end)
+
+      assert OXC.patch_string(source, patches) ==
+               "import { ref } from '/@vendor/vue.js'\nimport a from './utils'"
+    end
+  end
+
+  describe "patch_string/2" do
+    test "replaces a single range" do
+      assert OXC.patch_string("hello world", [%{start: 6, end: 11, change: "elixir"}]) ==
+               "hello elixir"
+    end
+
+    test "applies multiple non-overlapping patches" do
+      source = "aaa bbb ccc"
+
+      patches = [
+        %{start: 0, end: 3, change: "xxx"},
+        %{start: 8, end: 11, change: "zzz"}
+      ]
+
+      assert OXC.patch_string(source, patches) == "xxx bbb zzz"
+    end
+
+    test "deduplicates patches with same range" do
+      source = "hello world"
+
+      patches = [
+        %{start: 6, end: 11, change: "elixir"},
+        %{start: 6, end: 11, change: "elixir"}
+      ]
+
+      assert OXC.patch_string(source, patches) == "hello elixir"
+    end
+
+    test "handles empty patches" do
+      assert OXC.patch_string("hello", []) == "hello"
+    end
+
+    test "handles insertion (start == end)" do
+      assert OXC.patch_string("hello world", [%{start: 5, end: 5, change: ","}]) ==
+               "hello, world"
+    end
+  end
+
   defp collect_messages(tag) do
     collect_messages(tag, [])
   end
