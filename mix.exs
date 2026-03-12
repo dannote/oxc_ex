@@ -2,7 +2,7 @@ defmodule OXC.MixProject do
   use Mix.Project
 
   @version "0.5.0"
-  @source_url "https://github.com/dannote/oxc_ex"
+  @source_url "https://github.com/elixir-volt/oxc_ex"
 
   def project do
     [

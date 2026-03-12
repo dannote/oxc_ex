@@ -4,7 +4,7 @@ defmodule OXC.Native do
   use RustlerPrecompiled,
     otp_app: :oxc,
     crate: "oxc_ex_nif",
-    base_url: "https://github.com/dannote/oxc_ex/releases/download/v#{version}",
+    base_url: "https://github.com/elixir-volt/oxc_ex/releases/download/v#{version}",
     force_build: System.get_env("OXC_EX_BUILD") in ["1", "true"],
     targets: ~w(
       aarch64-apple-darwin
