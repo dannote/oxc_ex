@@ -420,18 +420,8 @@ fn topo_sort(modules: &HashMap<String, Vec<String>>) -> Result<Vec<String>, Stri
         }
     }
 
-    // Circular deps: append remaining modules in original order
     if sorted.len() != all_keys.len() {
-        let sorted_set: HashSet<&str> = sorted.iter().map(|s| s.as_str()).collect();
-        let mut remaining: Vec<&String> = all_keys
-            .iter()
-            .filter(|k| !sorted_set.contains(k.as_str()))
-            .copied()
-            .collect();
-        remaining.sort();
-        for r in remaining {
-            sorted.push(r.clone());
-        }
+        return Err("Circular dependency detected".to_string());
     }
 
     Ok(sorted)
