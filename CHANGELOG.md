@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+- Fix `default` keyword rejected as property name when minifying bundled IIFE output. The minifier was re-parsing in ESM module mode (`SourceType::mjs`) instead of script mode — `{ default: value }` and `obj.default` are valid JavaScript but were rejected as reserved words in module context.
+
 ## 0.5.1
 
 - Handle circular dependencies in bundler's topological sort — modules in a cycle are appended in sorted order instead of raising an error. Enables bundling Vue, Reka UI, and other frameworks with circular imports.
