@@ -371,7 +371,9 @@ fn transform_module(
     // Append alias declarations for renamed exports: `export { fetchImpl as fetch }`
     let mut result = code;
     for (local, exported) in &aliases {
-        result.push_str(&format!("var {exported} = {local};\n"));
+        // `default` is a reserved word — use `_default` as the variable name
+        let safe_name = if exported == "default" { "_default" } else { exported.as_str() };
+        result.push_str(&format!("var {safe_name} = {local};\n"));
     }
 
     Ok((result, imports))

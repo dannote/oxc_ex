@@ -146,14 +146,15 @@ defmodule OXC.BundleTest do
       assert length(errors) > 0
     end
 
-    test "returns error for circular dependencies" do
+    test "handles circular dependencies by appending remaining modules" do
       files = [
         {"a.ts", "import { B } from './b'\nexport class A extends B {}"},
         {"b.ts", "import { A } from './a'\nexport class B extends A {}"}
       ]
 
-      {:error, errors} = OXC.bundle(files)
-      assert hd(errors) =~ "Circular"
+      {:ok, code} = OXC.bundle(files)
+      assert code =~ "class A"
+      assert code =~ "class B"
     end
   end
 
