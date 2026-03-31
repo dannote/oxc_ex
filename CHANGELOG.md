@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4
+
+- Handle `export default <expression>` in bundler — emits `var _default = <expr>` instead of dropping the expression. Fixes Vue SFC compiled output losing the component object.
+
 ## 0.5.3
 
 - Fix `export { local as default }` producing `var default = local` (syntax error). The bundler's alias emitter now uses `_default` for the reserved word `default`.

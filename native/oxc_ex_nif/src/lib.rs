@@ -324,6 +324,7 @@ fn transform_module(
 
     // Strip module syntax: remove imports, unwrap exports
     let mut aliases: Vec<(String, String)> = Vec::new();
+    let mut default_expr_text: Option<String> = None;
     let mut new_body = oxc_allocator::Vec::new_in(allocator);
     for stmt in program.body.into_iter() {
         match stmt {
@@ -346,18 +347,39 @@ fn transform_module(
                     }
                 }
             }
-            // `export default expr` → keep as expression statement
+            // `export default expr` → keep declaration or emit as `var _default = expr`
             Statement::ExportDefaultDeclaration(decl) => {
                 let inner = decl.unbox();
                 match inner.declaration {
                     oxc_ast::ast::ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                        // Named function: keep as-is, add alias if unnamed
+                        let has_name = f.id.is_some();
                         new_body.push(Statement::FunctionDeclaration(f));
+                        if !has_name {
+                            aliases.push(("_anonymous_default".to_string(), "default".to_string()));
+                        }
                     }
                     oxc_ast::ast::ExportDefaultDeclarationKind::ClassDeclaration(c) => {
                         new_body.push(Statement::ClassDeclaration(c));
                     }
                     oxc_ast::ast::ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => {}
-                    _ => {}
+                    _other => {
+                        // `export default <expr>` → extract expression from source
+                        let start = inner.span.start as usize;
+                        let end = inner.span.end as usize;
+                        if end > start && end <= source.len() {
+                            let full = &source[start..end];
+                            // Skip past "export default " prefix
+                            let expr = full
+                                .strip_prefix("export").map(|s| s.trim_start())
+                                .and_then(|s| s.strip_prefix("default")).map(|s| s.trim_start())
+                                .unwrap_or(full)
+                                .trim_end_matches(';').trim();
+                            if !expr.is_empty() {
+                                default_expr_text = Some(expr.to_string());
+                            }
+                        }
+                    }
                 }
             }
             // Keep everything else as-is
@@ -368,8 +390,14 @@ fn transform_module(
 
     let CodegenReturn { code, .. } = Codegen::new().build(&program);
 
-    // Append alias declarations for renamed exports: `export { fetchImpl as fetch }`
     let mut result = code;
+
+    // `export default expr` → `var _default = expr;`
+    if let Some(expr) = &default_expr_text {
+        result.push_str(&format!("var _default = {};\n", expr));
+    }
+
+    // Append alias declarations for renamed exports: `export { fetchImpl as fetch }`
     for (local, exported) in &aliases {
         // `default` is a reserved word — use `_default` as the variable name
         let safe_name = if exported == "default" { "_default" } else { exported.as_str() };
