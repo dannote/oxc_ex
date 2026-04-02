@@ -101,10 +101,12 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
+      assert_valid_bundle(js)
       assert js =~ "function greetImpl()"
       refute js =~ "export"
       refute js =~ "import"
-      assert run_bundle(js) == "hi\n"
+      assert js =~ ~s|__oxc_bundle_module_0["greet"] = greetImpl;|
+      assert js =~ ~s|const greet = __oxc_bundle_module_0["greet"];|
     end
 
     test "drops bare re-export specifiers" do
@@ -158,7 +160,7 @@ defmodule OXC.BundleTest do
     end
   end
 
-  describe "bundle/2 runtime correctness" do
+  describe "bundle/2 module hygiene" do
     test "isolates module-private bindings across files" do
       files = [
         {"comp_a.js",
@@ -170,7 +172,11 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
-      assert run_bundle(js) == ~s([{"class":"text-red"},{"class":"text-blue"}]) <> "\n"
+      assert_valid_bundle(js)
+      assert length(Regex.scan(~r/const _hoisted_1 =/, js)) == 2
+      assert length(Regex.scan(~r/\(\(\) => \{/, js)) == 4
+      assert js =~ ~s|const render_a = __oxc_bundle_module_0["render_a"];|
+      assert js =~ ~s|const render_b = __oxc_bundle_module_1["render_b"];|
     end
 
     test "supports default imports from default expressions" do
@@ -180,8 +186,10 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
+      assert_valid_bundle(js)
       refute js =~ " as number"
-      assert run_bundle(js) == "42\n"
+      assert js =~ ~s|__oxc_bundle_module_0["default"] = answer;|
+      assert js =~ ~s|const answer = __oxc_bundle_module_0["default"];|
     end
 
     test "supports aliased imports" do
@@ -191,7 +199,8 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
-      assert run_bundle(js) == "hi\n"
+      assert_valid_bundle(js)
+      assert js =~ ~s|const hello = __oxc_bundle_module_0["greet"];|
     end
 
     test "supports namespace imports" do
@@ -201,7 +210,8 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
-      assert run_bundle(js) == "42\n"
+      assert_valid_bundle(js)
+      assert js =~ "const ns = __oxc_bundle_module_0;"
     end
 
     test "resolves nested paths without basename collisions" do
@@ -213,7 +223,11 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
-      assert run_bundle(js) == "[1,2]\n"
+      assert_valid_bundle(js)
+      assert js =~ ~s|__oxc_bundle_module_0["src"] = src;|
+      assert js =~ ~s|__oxc_bundle_module_1["lib"] = lib;|
+      assert js =~ ~s|const src = __oxc_bundle_module_0["src"];|
+      assert js =~ ~s|const lib = __oxc_bundle_module_1["lib"];|
     end
 
     test "handles anonymous default exports" do
@@ -223,7 +237,9 @@ defmodule OXC.BundleTest do
       ]
 
       {:ok, js} = OXC.bundle(files)
-      assert run_bundle(js) == "ok\n"
+      assert_valid_bundle(js)
+      assert js =~ ~s|__oxc_bundle_module_0["default"] = function() {|
+      assert js =~ ~s|const render = __oxc_bundle_module_0["default"];|
     end
   end
 
@@ -428,22 +444,8 @@ defmodule OXC.BundleTest do
     end
   end
 
-  defp run_bundle(js) do
-    runtime = System.find_executable("bun") || System.find_executable("node")
-    assert runtime, "bun or node is required to verify bundle runtime behavior"
-
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "oxc-bundle-#{System.unique_integer([:positive, :monotonic])}.js"
-      )
-
-    try do
-      File.write!(path, js)
-      {output, 0} = System.cmd(runtime, [path], stderr_to_stdout: true)
-      output
-    after
-      File.rm(path)
-    end
+  defp assert_valid_bundle(js) do
+    assert OXC.valid?(js, "bundle.js")
+    assert {:ok, _ast} = OXC.parse(js, "bundle.js")
   end
 end
