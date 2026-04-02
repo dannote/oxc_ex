@@ -94,17 +94,17 @@ defmodule OXC.BundleTest do
       refute js =~ "export"
     end
 
-    test "emits alias for renamed export specifiers" do
+    test "supports renamed export specifiers" do
       files = [
         {"impl.ts", "function greetImpl() { return 'hi' }\nexport { greetImpl as greet }"},
-        {"main.ts", "import { greet } from './impl'\n(globalThis as any).g = greet;"}
+        {"main.ts", "import { greet } from './impl'\nconsole.log(greet())"}
       ]
 
       {:ok, js} = OXC.bundle(files)
       assert js =~ "function greetImpl()"
-      assert js =~ "var greet = greetImpl"
       refute js =~ "export"
       refute js =~ "import"
+      assert run_bundle(js) == "hi\n"
     end
 
     test "drops bare re-export specifiers" do
@@ -155,6 +155,75 @@ defmodule OXC.BundleTest do
       {:ok, code} = OXC.bundle(files)
       assert code =~ "class A"
       assert code =~ "class B"
+    end
+  end
+
+  describe "bundle/2 runtime correctness" do
+    test "isolates module-private bindings across files" do
+      files = [
+        {"comp_a.js",
+         ~S[const _hoisted_1 = { class: "text-red" }; export function render_a() { return _hoisted_1; }]},
+        {"comp_b.js",
+         ~S[const _hoisted_1 = { class: "text-blue" }; export function render_b() { return _hoisted_1; }]},
+        {"entry.js",
+         ~S|import { render_a } from "./comp_a.js"; import { render_b } from "./comp_b.js"; console.log(JSON.stringify([render_a(), render_b()]));|}
+      ]
+
+      {:ok, js} = OXC.bundle(files)
+      assert run_bundle(js) == ~s([{"class":"text-red"},{"class":"text-blue"}]) <> "\n"
+    end
+
+    test "supports default imports from default expressions" do
+      files = [
+        {"answer.ts", "const answer: number = 42; export default answer as number;"},
+        {"entry.ts", "import answer from './answer'; console.log(answer);"}
+      ]
+
+      {:ok, js} = OXC.bundle(files)
+      refute js =~ " as number"
+      assert run_bundle(js) == "42\n"
+    end
+
+    test "supports aliased imports" do
+      files = [
+        {"impl.ts", "export function greet() { return 'hi' }"},
+        {"entry.ts", "import { greet as hello } from './impl'; console.log(hello());"}
+      ]
+
+      {:ok, js} = OXC.bundle(files)
+      assert run_bundle(js) == "hi\n"
+    end
+
+    test "supports namespace imports" do
+      files = [
+        {"a.ts", "export const value = 42;"},
+        {"entry.ts", "import * as ns from './a'; console.log(ns.value);"}
+      ]
+
+      {:ok, js} = OXC.bundle(files)
+      assert run_bundle(js) == "42\n"
+    end
+
+    test "resolves nested paths without basename collisions" do
+      files = [
+        {"src/index.ts", "export const src = 1;"},
+        {"lib/index.ts", "export const lib = 2;"},
+        {"entry.ts",
+         "import { src } from './src/index'; import { lib } from './lib/index'; console.log(JSON.stringify([src, lib]));"}
+      ]
+
+      {:ok, js} = OXC.bundle(files)
+      assert run_bundle(js) == "[1,2]\n"
+    end
+
+    test "handles anonymous default exports" do
+      files = [
+        {"widget.ts", "export default function() { return 'ok' }"},
+        {"entry.ts", "import render from './widget'; console.log(render());"}
+      ]
+
+      {:ok, js} = OXC.bundle(files)
+      assert run_bundle(js) == "ok\n"
     end
   end
 
@@ -292,20 +361,32 @@ defmodule OXC.BundleTest do
       assert is_binary(result.sourcemap)
     end
 
-    test "sourcemap is valid JSON" do
-      files = [{"a.ts", "const x = 1;"}]
+    test "sourcemap points to original bundle sources" do
+      files = [
+        {"a.ts", "export const x = 1;"},
+        {"b.ts", "import { x } from './a'; console.log(x);"}
+      ]
+
       {:ok, result} = OXC.bundle(files, sourcemap: true)
       assert {:ok, map} = Jason.decode(result.sourcemap)
       assert map["version"] == 3
+      assert Enum.sort(map["sources"]) == ["a.ts", "b.ts"]
+      refute "bundle.js" in map["sources"]
     end
 
     test "sourcemap works with minify" do
-      files = [{"a.ts", "const x = 1; (globalThis as any).x = x;"}]
+      files = [
+        {"a.ts", "export const x = 1;"},
+        {"b.ts", "import { x } from './a'; console.log(x);"}
+      ]
+
       {:ok, result} = OXC.bundle(files, minify: true, sourcemap: true)
       assert is_binary(result.code)
       assert is_binary(result.sourcemap)
       assert {:ok, map} = Jason.decode(result.sourcemap)
       assert map["version"] == 3
+      assert "b.ts" in map["sources"]
+      refute "bundle.js" in map["sources"]
     end
 
     test "returns plain string without sourcemap option" do
@@ -344,6 +425,25 @@ defmodule OXC.BundleTest do
       result = OXC.bundle!(files, sourcemap: true)
       assert is_map(result)
       assert is_binary(result.code)
+    end
+  end
+
+  defp run_bundle(js) do
+    runtime = System.find_executable("bun") || System.find_executable("node")
+    assert runtime, "bun or node is required to verify bundle runtime behavior"
+
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "oxc-bundle-#{System.unique_integer([:positive, :monotonic])}.js"
+      )
+
+    try do
+      File.write!(path, js)
+      {output, 0} = System.cmd(runtime, [path], stderr_to_stdout: true)
+      output
+    after
+      File.rm(path)
     end
   end
 end
