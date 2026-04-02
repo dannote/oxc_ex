@@ -9,7 +9,7 @@ use oxc_minifier::{CompressOptions, MangleOptions, Minifier, MinifierOptions};
 use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::SemanticBuilder;
 use oxc_sourcemap::{ConcatSourceMapBuilder, SourceMap, SourceMapBuilder};
-use oxc_span::{SourceType, Span};
+use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::node::NodeId;
 use oxc_transformer::{EnvOptions, JsxRuntime, TransformOptions, Transformer};
 use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
@@ -365,6 +365,49 @@ fn generate_statement_chunk<'a>(
     }
 }
 
+fn line_col_from_offset(source_text: &str, offset: u32) -> (u32, u32) {
+    let mut line = 0;
+    let mut col = 0;
+
+    for byte in source_text.as_bytes().iter().take(offset as usize) {
+        if *byte == b'\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+
+    (line, col)
+}
+
+fn synthetic_chunk_with_map(
+    filename: &str,
+    source_text: &str,
+    code: String,
+    generated_col: u32,
+    source_span: Span,
+    sourcemap: bool,
+) -> GeneratedChunk {
+    if !sourcemap {
+        return GeneratedChunk {
+            code,
+            sourcemap: None,
+        };
+    }
+
+    let (src_line, src_col) = line_col_from_offset(source_text, source_span.start);
+    let mut builder = SourceMapBuilder::default();
+    builder.set_file(filename);
+    let source_id = builder.set_source_and_content(filename, source_text);
+    builder.add_token(0, generated_col, src_line, src_col, Some(source_id), None);
+
+    GeneratedChunk {
+        code,
+        sourcemap: Some(builder.into_sourcemap()),
+    }
+}
+
 fn concat_sourcemaps_with_offsets(entries: &[(SourceMap, u32)], file: &str) -> Option<SourceMap> {
     if entries.is_empty() {
         return None;
@@ -529,17 +572,24 @@ fn render_default_export<'a>(
                 chunk
             } else {
                 let mut function = function;
+                let source_span = function.span;
                 function.r#type = oxc_ast::ast::FunctionType::FunctionExpression;
+                let prefix = format!("{module_var}[\"default\"] = ");
+                let generated_col = prefix.len() as u32;
                 let mut codegen = Codegen::new();
-                codegen.print_str(&format!("{module_var}[\"default\"] = "));
+                codegen.print_str(&prefix);
                 function.print(&mut codegen, Context::default());
                 codegen.print_str(";");
                 let mut code = codegen.into_source_text();
                 code.push('\n');
-                GeneratedChunk {
+                synthetic_chunk_with_map(
+                    filename,
+                    source_text,
                     code,
-                    sourcemap: None,
-                }
+                    generated_col,
+                    source_span,
+                    sourcemap,
+                )
             }
         }
         oxc_ast::ast::ExportDefaultDeclarationKind::ClassDeclaration(class) => {
@@ -559,17 +609,24 @@ fn render_default_export<'a>(
                 chunk
             } else {
                 let mut class = class;
+                let source_span = class.span;
                 class.r#type = oxc_ast::ast::ClassType::ClassExpression;
+                let prefix = format!("{module_var}[\"default\"] = ");
+                let generated_col = prefix.len() as u32;
                 let mut codegen = Codegen::new();
-                codegen.print_str(&format!("{module_var}[\"default\"] = "));
+                codegen.print_str(&prefix);
                 class.print(&mut codegen, Context::default());
                 codegen.print_str(";");
                 let mut code = codegen.into_source_text();
                 code.push('\n');
-                GeneratedChunk {
+                synthetic_chunk_with_map(
+                    filename,
+                    source_text,
                     code,
-                    sourcemap: None,
-                }
+                    generated_col,
+                    source_span,
+                    sourcemap,
+                )
             }
         }
         oxc_ast::ast::ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => GeneratedChunk {
@@ -578,16 +635,23 @@ fn render_default_export<'a>(
         },
         expression => {
             let expression = expression.into_expression().into_inner_expression();
+            let source_span = expression.span();
+            let prefix = format!("{module_var}[\"default\"] = ");
+            let generated_col = prefix.len() as u32;
             let mut codegen = Codegen::new();
-            codegen.print_str(&format!("{module_var}[\"default\"] = "));
+            codegen.print_str(&prefix);
             codegen.print_expression(&expression);
             codegen.print_str(";");
             let mut code = codegen.into_source_text();
             code.push('\n');
-            GeneratedChunk {
+            synthetic_chunk_with_map(
+                filename,
+                source_text,
                 code,
-                sourcemap: None,
-            }
+                generated_col,
+                source_span,
+                sourcemap,
+            )
         }
     }
 }

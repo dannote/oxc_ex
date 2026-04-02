@@ -390,6 +390,28 @@ defmodule OXC.BundleTest do
       refute "bundle.js" in map["sources"]
     end
 
+    test "sourcemap keeps anonymous default export sources" do
+      files = [
+        {"widget.ts", "export default function() { return 'ok' }"},
+        {"entry.ts", "import render from './widget'; console.log(render());"}
+      ]
+
+      {:ok, result} = OXC.bundle(files, sourcemap: true)
+      assert {:ok, map} = Jason.decode(result.sourcemap)
+      assert Enum.sort(map["sources"]) == ["entry.ts", "widget.ts"]
+    end
+
+    test "sourcemap keeps default expression sources" do
+      files = [
+        {"answer.ts", "export default 42;"},
+        {"entry.ts", "import answer from './answer'; console.log(answer);"}
+      ]
+
+      {:ok, result} = OXC.bundle(files, sourcemap: true)
+      assert {:ok, map} = Jason.decode(result.sourcemap)
+      assert Enum.sort(map["sources"]) == ["answer.ts", "entry.ts"]
+    end
+
     test "sourcemap works with minify" do
       files = [
         {"a.ts", "export const x = 1;"},

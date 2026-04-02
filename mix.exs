@@ -59,7 +59,7 @@ defmodule OXC.MixProject do
         "cmd cargo fmt --manifest-path native/oxc_ex_nif/Cargo.toml -- --check",
         "cmd cargo clippy --manifest-path native/oxc_ex_nif/Cargo.toml -- -D warnings"
       ],
-      ci: ["lint", "cmd MIX_ENV=test mix test"]
+      ci: ["lint", "cmd OXC_EX_BUILD=1 MIX_ENV=test mix test"]
     ]
   end
 
