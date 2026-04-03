@@ -8,7 +8,7 @@ name = "oxc_ex_nif"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = { version = "0.37", default-features = false, features = ["derive", "nif_version_2_15"] }
+rustler = { version = "0.37", default-features = false, features = ["derive", "nif_version_2_15", "serde"] }
 oxc_allocator = "0.117"
 oxc_ast = { version = "0.117", features = ["serialize"] }
 oxc_codegen = { version = "0.117", features = ["sourcemap"] }
@@ -21,4 +21,11 @@ oxc_span = "0.117"
 oxc_syntax = "0.117"
 oxc_transformer = "0.117"
 oxc_transformer_plugins = "0.117"
+oxc95 = { package = "oxc", version = "=0.95.0" }
+oxc_resolver = "=11.10.0"
+rolldown = "=0.1.0"
+rolldown_common = "=0.1.0"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "time"] }

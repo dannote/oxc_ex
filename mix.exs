@@ -1,7 +1,7 @@
 defmodule OXC.MixProject do
   use Mix.Project
 
-  @version "0.5.4"
+  @version "0.6.0"
   @source_url "https://github.com/elixir-volt/oxc_ex"
 
   def project do
@@ -15,7 +15,7 @@ defmodule OXC.MixProject do
       dialyzer: [plt_add_apps: [:mix]],
       name: "OXC",
       description:
-        "Elixir bindings for the OXC JavaScript toolchain — parse, transform, and minify JS/TS via Rust NIFs.",
+        "Elixir bindings for the OXC JavaScript toolchain — parse, transform, minify, and bundle JS/TS via Rust NIFs.",
       source_url: @source_url,
       homepage_url: @source_url,
       package: package(),

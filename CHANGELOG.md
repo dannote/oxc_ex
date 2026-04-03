@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+### Breaking changes
+
+- `OXC.bundle/2` now requires `entry: "..."` to identify the bundle entry module.
+  Migration: change `OXC.bundle(files)` to `OXC.bundle(files, entry: "main.ts")`.
+
+### Changed
+
+- `OXC.bundle/2` now uses Rolldown/OXC for bundling.
+- Internal Rustler boundary code for `parse`, `transform`, `minify`, and `bundle` was simplified with serde-based term encoding/decoding.
+
 ## 0.5.4
 
 - Handle `export default <expression>` in bundler — emits `var _default = <expr>` instead of dropping the expression. Fixes Vue SFC compiled output losing the component object.

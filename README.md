@@ -167,7 +167,8 @@ rewritten = OXC.patch_string(source, patches)
 ### Bundle
 
 Bundle multiple TypeScript/JavaScript modules into a single IIFE script.
-Resolves import dependencies, topologically sorts, strips `import`/`export` syntax:
+Treats the provided files as a virtual project, resolves their imports,
+transforms TS/JSX, and bundles the result:
 
 ```elixir
 files = [
@@ -175,30 +176,39 @@ files = [
   {"target.ts", "import { Event } from './event'\nexport class Target extends Event {}"}
 ]
 
-{:ok, js} = OXC.bundle(files)
-# (() => { class Event { ... } class Target extends Event { } })();
+{:ok, js} = OXC.bundle(files, entry: "target.ts")
+String.contains?(js, "Event")
+# true
+String.contains?(js, "Target")
+# true
 ```
 
-Options:
+Options (pass the entry module via `entry:`):
+
+```elixir
+# Required: choose which file starts the bundle graph
+{:ok, js} = OXC.bundle(files, entry: "target.ts")
+```
+
 
 ```elixir
 # Minify with tree-shaking and variable mangling
-{:ok, js} = OXC.bundle(files, minify: true)
+{:ok, js} = OXC.bundle(files, entry: "target.ts", minify: true)
 
 # Compile-time replacements (like esbuild/Bun define)
-{:ok, js} = OXC.bundle(files, define: %{"process.env.NODE_ENV" => ~s("production")})
+{:ok, js} = OXC.bundle(files, entry: "target.ts", define: %{"process.env.NODE_ENV" => ~s("production")})
 
 # Source maps
-{:ok, %{code: js, sourcemap: map}} = OXC.bundle(files, sourcemap: true)
+{:ok, %{code: js, sourcemap: map}} = OXC.bundle(files, entry: "target.ts", sourcemap: true)
 
 # Remove console.* calls
-{:ok, js} = OXC.bundle(files, minify: true, drop_console: true)
+{:ok, js} = OXC.bundle(files, entry: "target.ts", minify: true, drop_console: true)
 
 # Target-specific downleveling
-{:ok, js} = OXC.bundle(files, target: "es2020")
+{:ok, js} = OXC.bundle(files, entry: "target.ts", target: "es2020")
 
 # Banner and footer
-{:ok, js} = OXC.bundle(files, banner: "/* MIT */", footer: "/* v1.0 */")
+{:ok, js} = OXC.bundle(files, entry: "target.ts", banner: "/* MIT */", footer: "/* v1.0 */")
 ```
 
 ### Bang Variants
@@ -216,12 +226,12 @@ imports = OXC.imports!("import { ref } from 'vue'", "test.ts")
 
 OXC is a collection of high-performance JavaScript tools written in Rust.
 This library wraps `oxc_parser`, `oxc_transformer`, `oxc_minifier`,
-`oxc_transformer_plugins`, and `oxc_codegen` via [Rustler](https://github.com/rusterlium/rustler) NIFs.
+`oxc_transformer_plugins`, and `oxc_codegen` via [Rustler](https://github.com/rusterlium/rustler) NIFs,
+and uses Rolldown/OXC for `bundle/2`.
 
 All NIF calls run on the dirty CPU scheduler so they don't block the BEAM.
-The parser produces JSON via OXC's ESTree serializer, which is then
-converted to atom-keyed Elixir maps in the NIF — no JSON library needed
-on the Elixir side.
+The parser produces ESTree JSON via OXC's serializer, Rustler encodes it
+as BEAM terms, and the Elixir wrapper normalizes AST keys for traversal helpers.
 
 ## License
 

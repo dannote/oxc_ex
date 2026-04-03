@@ -19,7 +19,10 @@ defmodule OXC do
 
   @type ast :: map()
   @type error :: %{message: String.t()}
+  @type code_with_sourcemap :: %{code: String.t(), sourcemap: String.t()}
   @type parse_result :: {:ok, ast()} | {:error, [error()]}
+  @type transform_result :: {:ok, String.t() | code_with_sourcemap()} | {:error, [String.t()]}
+  @type bundle_result :: {:ok, String.t() | code_with_sourcemap()} | {:error, [String.t()]}
 
   @doc """
   Parse JavaScript or TypeScript source code into an ESTree AST.
@@ -46,7 +49,10 @@ defmodule OXC do
   """
   @spec parse(String.t(), String.t()) :: parse_result()
   def parse(source, filename) do
-    OXC.Native.parse(source, filename)
+    case OXC.Native.parse(source, filename) do
+      {:ok, ast} -> {:ok, atomize_term_keys(ast)}
+      {:error, errors} -> {:error, atomize_term_keys(errors)}
+    end
   end
 
   @doc """
@@ -110,26 +116,12 @@ defmodule OXC do
       iex> js =~ "createElement"
       true
   """
-  @spec transform(String.t(), String.t(), keyword()) ::
-          {:ok, String.t() | %{code: String.t(), sourcemap: String.t()}} | {:error, [String.t()]}
+  @spec transform(String.t(), String.t(), keyword()) :: transform_result()
   def transform(source, filename, opts \\ []) do
-    jsx_runtime = opts |> Keyword.get(:jsx, :automatic) |> Atom.to_string()
-    jsx_factory = Keyword.get(opts, :jsx_factory, "")
-    jsx_fragment = Keyword.get(opts, :jsx_fragment, "")
-    import_source = Keyword.get(opts, :import_source, "")
-    target = Keyword.get(opts, :target, "")
-    sourcemap = Keyword.get(opts, :sourcemap, false)
-
-    OXC.Native.transform(
-      source,
-      filename,
-      jsx_runtime,
-      jsx_factory,
-      jsx_fragment,
-      import_source,
-      target,
-      sourcemap
-    )
+    case OXC.Native.transform(source, filename, normalize_transform_options(opts)) do
+      {:ok, result} -> {:ok, normalize_native_result(result)}
+      {:error, errors} -> {:error, errors}
+    end
   end
 
   @doc """
@@ -140,8 +132,7 @@ defmodule OXC do
       iex> OXC.transform!("const x: number = 42", "test.ts")
       "const x = 42;\\n"
   """
-  @spec transform!(String.t(), String.t(), keyword()) ::
-          String.t() | %{code: String.t(), sourcemap: String.t()}
+  @spec transform!(String.t(), String.t(), keyword()) :: String.t() | code_with_sourcemap()
   def transform!(source, filename, opts \\ []) do
     case transform(source, filename, opts) do
       {:ok, code} -> code
@@ -169,8 +160,7 @@ defmodule OXC do
   """
   @spec minify(String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, [String.t()]}
   def minify(source, filename, opts \\ []) do
-    mangle = Keyword.get(opts, :mangle, true)
-    OXC.Native.minify(source, filename, mangle)
+    OXC.Native.minify(source, filename, normalize_minify_options(opts))
   end
 
   @doc """
@@ -220,19 +210,14 @@ defmodule OXC do
   @doc """
   Bundle multiple TypeScript/JavaScript modules into a single IIFE script.
 
-  Takes a list of `{filename, source}` tuples representing modules that import
-  from each other via relative paths (e.g. `import { Foo } from './foo'`).
-
-  The bundler:
-  1. Transforms each module (strips TypeScript, JSX)
-  2. Resolves the dependency graph from import statements
-  3. Topologically sorts modules
-  4. Strips `import`/`export` syntax (declarations are kept in scope)
-  5. Concatenates in dependency order, wrapped in `(() => { ... })()`
-  6. Optionally applies define replacements and minification
+  Takes a list of `{filename, source}` tuples representing a virtual project.
+  Modules can import each other via relative paths and are bundled into a
+  single IIFE script.
 
   ## Options
 
+    * `:entry` — entry module filename from `files` (required), for example
+      `"main.ts"`
     * `:minify` — minify the output (default: `false`)
     * `:banner` — string to prepend before the IIFE (e.g. `"/* v1.0 */"`)
     * `:footer` — string to append after the IIFE
@@ -250,34 +235,87 @@ defmodule OXC do
 
       iex> files = [
       ...>   {"event.ts", "export class Event { type: string; constructor(type: string) { this.type = type } }"},
-      ...>   {"target.ts", "import { Event } from './event'\\nexport class Target { dispatch(e: Event) { return e.type } }"}
+      ...>   {"target.ts", "import { Event } from './event'\\nexport class Target extends Event {}"}
       ...> ]
-      iex> {:ok, js} = OXC.bundle(files)
-      iex> js =~ "class Event"
+      iex> {:ok, js} = OXC.bundle(files, entry: "target.ts")
+      iex> String.contains?(js, "Event")
       true
-      iex> js =~ "class Target"
+      iex> String.contains?(js, "Target")
       true
-      iex> js =~ "import"
+      iex> String.contains?(js, "import ")
       false
   """
-  @spec bundle([{String.t(), String.t()}], keyword()) ::
-          {:ok, String.t() | %{code: String.t(), sourcemap: String.t()}}
-          | {:error, [String.t()]}
+  @spec bundle([{String.t(), String.t()}], keyword()) :: bundle_result()
   def bundle(files, opts \\ []) do
-    OXC.Native.bundle(files, opts)
+    if Keyword.get(opts, :entry, "") == "" do
+      {:error, ["bundle/2 requires :entry, for example: entry: \"main.ts\""]}
+    else
+      case OXC.Native.bundle(files, normalize_bundle_options(opts)) do
+        {:ok, result} -> {:ok, normalize_native_result(result)}
+        {:error, errors} -> {:error, errors}
+      end
+    end
   end
 
   @doc """
   Like `bundle/2` but raises on errors.
   """
-  @spec bundle!([{String.t(), String.t()}], keyword()) ::
-          String.t() | %{code: String.t(), sourcemap: String.t()}
+  @spec bundle!([{String.t(), String.t()}], keyword()) :: String.t() | code_with_sourcemap()
   def bundle!(files, opts \\ []) do
     case bundle(files, opts) do
       {:ok, result} -> result
       {:error, errors} -> raise "OXC bundle error: #{inspect(errors)}"
     end
   end
+
+  defp normalize_transform_options(opts) do
+    %{
+      "jsx" => normalize_jsx_runtime(Keyword.get(opts, :jsx, :automatic)),
+      "jsx_factory" => Keyword.get(opts, :jsx_factory, ""),
+      "jsx_fragment" => Keyword.get(opts, :jsx_fragment, ""),
+      "import_source" => Keyword.get(opts, :import_source, ""),
+      "target" => Keyword.get(opts, :target, ""),
+      "sourcemap" => Keyword.get(opts, :sourcemap, false)
+    }
+  end
+
+  defp normalize_minify_options(opts) do
+    %{"mangle" => Keyword.get(opts, :mangle, true)}
+  end
+
+  defp normalize_bundle_options(opts) do
+    %{
+      "entry" => Keyword.get(opts, :entry, ""),
+      "minify" => Keyword.get(opts, :minify, false),
+      "banner" => Keyword.get(opts, :banner),
+      "footer" => Keyword.get(opts, :footer),
+      "define" => Keyword.get(opts, :define, %{}),
+      "sourcemap" => Keyword.get(opts, :sourcemap, false),
+      "drop_console" => Keyword.get(opts, :drop_console, false),
+      "jsx" => normalize_jsx_runtime(Keyword.get(opts, :jsx, :automatic)),
+      "jsx_factory" => Keyword.get(opts, :jsx_factory, ""),
+      "jsx_fragment" => Keyword.get(opts, :jsx_fragment, ""),
+      "import_source" => Keyword.get(opts, :import_source, ""),
+      "target" => Keyword.get(opts, :target, "")
+    }
+  end
+
+  defp normalize_jsx_runtime(runtime) when is_atom(runtime), do: Atom.to_string(runtime)
+  defp normalize_jsx_runtime(runtime) when is_binary(runtime), do: runtime
+  defp normalize_jsx_runtime(_runtime), do: "automatic"
+
+  defp normalize_native_result(result) when is_map(result), do: atomize_term_keys(result)
+  defp normalize_native_result(result), do: result
+
+  defp atomize_term_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} ->
+      atom_key = if is_binary(key), do: String.to_atom(key), else: key
+      {atom_key, atomize_term_keys(value)}
+    end)
+  end
+
+  defp atomize_term_keys(list) when is_list(list), do: Enum.map(list, &atomize_term_keys/1)
+  defp atomize_term_keys(value), do: value
 
   # ── AST Traversal ──
 
