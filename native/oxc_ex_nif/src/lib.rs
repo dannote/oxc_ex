@@ -594,13 +594,17 @@ fn bundle_with_rolldown(
     let external_specifiers = collect_external_specifiers(&files)?;
     let tempdir = TempDir::new()
         .map_err(|error| vec![format!("Failed to create temp directory: {error}")])?;
+    let cwd = tempdir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| tempdir.path().to_path_buf());
     let written_paths = write_virtual_project(&tempdir, &files)?;
     if !written_paths.iter().any(|path| path == &entry_name) {
         return Err(vec![format!(
             "bundle entry {entry_name:?} was not found in files"
         )]);
     }
-    let options = build_bundle_options(tempdir.path(), entry_name, opts, external_specifiers);
+    let options = build_bundle_options(&cwd, entry_name, opts, external_specifiers);
     let runtime = RuntimeBuilder::new_current_thread()
         .enable_all()
         .build()
@@ -631,10 +635,7 @@ fn bundle_with_rolldown(
             .as_ref()
             .map(oxc_sourcemap::SourceMap::to_json_string)
             .ok_or_else(|| vec!["Rolldown did not produce a source map".to_string()])?;
-        Some(relativize_sourcemap_sources(
-            sourcemap_json,
-            tempdir.path(),
-        )?)
+        Some(relativize_sourcemap_sources(sourcemap_json, &cwd)?)
     } else {
         None
     };

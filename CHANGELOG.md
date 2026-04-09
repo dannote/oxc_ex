@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- Fix absolute temp dir paths leaking into `#region` comments in bundled output
+
 ## 0.6.1
 
 - Added `:format` option to `bundle/2` — supports `:iife` (default), `:esm`, and `:cjs` output formats
