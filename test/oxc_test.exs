@@ -5,10 +5,10 @@ defmodule OXCTest do
   describe "parse/2" do
     test "parses simple variable declaration" do
       {:ok, ast} = OXC.parse("const x = 1", "test.js")
-      assert ast.type == "Program"
+      assert ast.type == :program
       assert [decl] = ast.body
-      assert decl.type == "VariableDeclaration"
-      assert decl.kind == "const"
+      assert decl.type == :variable_declaration
+      assert decl.kind == :const
       assert [declarator] = decl.declarations
       assert declarator.id.name == "x"
       assert declarator.init.value == 1
@@ -18,7 +18,7 @@ defmodule OXCTest do
       {:ok, ast} = OXC.parse("1 + 2", "test.js")
       [stmt] = ast.body
       expr = stmt.expression
-      assert expr.type == "BinaryExpression"
+      assert expr.type == :binary_expression
       assert expr.operator == "+"
       assert expr.left.value == 1
       assert expr.right.value == 2
@@ -27,7 +27,7 @@ defmodule OXCTest do
     test "parses function declaration" do
       {:ok, ast} = OXC.parse("function add(a, b) { return a + b }", "test.js")
       [func] = ast.body
-      assert func.type == "FunctionDeclaration"
+      assert func.type == :function_declaration
       assert func.id.name == "add"
       assert length(func.params) == 2
     end
@@ -35,7 +35,7 @@ defmodule OXCTest do
     test "parses TypeScript" do
       {:ok, ast} = OXC.parse("const x: number = 42", "test.ts")
       [decl] = ast.body
-      assert decl.type == "VariableDeclaration"
+      assert decl.type == :variable_declaration
       annotation = hd(decl.declarations).id.typeAnnotation
       assert annotation != nil
     end
@@ -43,12 +43,12 @@ defmodule OXCTest do
     test "parses JSX" do
       {:ok, ast} = OXC.parse("<div className='hello'>Hi</div>", "test.jsx")
       [stmt] = ast.body
-      assert stmt.expression.type == "JSXElement"
+      assert stmt.expression.type == :jsx_element
     end
 
     test "parses TSX" do
       {:ok, ast} = OXC.parse("const el: JSX.Element = <App />", "test.tsx")
-      assert ast.type == "Program"
+      assert ast.type == :program
     end
 
     test "returns errors for invalid syntax" do
@@ -69,15 +69,15 @@ defmodule OXCTest do
       {:ok, ast} = OXC.parse("const f = (x) => x * 2", "test.js")
       [decl] = ast.body
       init = hd(decl.declarations).init
-      assert init.type == "ArrowFunctionExpression"
+      assert init.type == :arrow_function_expression
     end
 
     test "parses import/export" do
       {:ok, ast} = OXC.parse("import { foo } from 'bar'; export default 42;", "test.js")
       assert length(ast.body) == 2
       [imp, exp] = ast.body
-      assert imp.type == "ImportDeclaration"
-      assert exp.type == "ExportDefaultDeclaration"
+      assert imp.type == :import_declaration
+      assert exp.type == :export_default_declaration
     end
 
     test "parses async/await" do
@@ -85,12 +85,26 @@ defmodule OXCTest do
       [func] = ast.body
       assert func.async == true
     end
+
+    test "type values are snake_case atoms" do
+      {:ok, ast} = OXC.parse("import { ref } from 'vue'", "test.js")
+      [imp] = ast.body
+      assert imp.type == :import_declaration
+      assert is_atom(imp.type)
+    end
+
+    test "kind values are atoms" do
+      {:ok, ast} = OXC.parse("const x = 1; let y = 2;", "test.js")
+      [const_decl, let_decl] = ast.body
+      assert const_decl.kind == :const
+      assert let_decl.kind == :let
+    end
   end
 
   describe "parse!/2" do
     test "returns AST on success" do
       ast = OXC.parse!("const x = 1", "test.js")
-      assert ast.type == "Program"
+      assert ast.type == :program
     end
 
     test "raises on parse error" do
@@ -134,9 +148,33 @@ defmodule OXCTest do
       end)
 
       types = collect_messages(:type)
-      assert "Program" in types
-      assert "VariableDeclaration" in types
-      assert "ObjectExpression" in types
+      assert :program in types
+      assert :variable_declaration in types
+      assert :object_expression in types
+    end
+
+    test "walks a list of nodes" do
+      {:ok, ast} = OXC.parse("const x = 1; const y = 2;", "test.js")
+      names = collect_identifiers(ast)
+      assert "x" in names
+      assert "y" in names
+
+      list_names =
+        OXC.collect(ast, fn
+          %{type: :variable_declaration} = node -> {:keep, node}
+          _ -> :skip
+        end)
+
+      assert length(list_names) == 2
+
+      OXC.walk(ast.body, fn
+        %{type: :identifier, name: name} -> send(self(), {:name, name})
+        _ -> :ok
+      end)
+
+      walked = collect_messages(:name)
+      assert "x" in walked
+      assert "y" in walked
     end
   end
 
@@ -146,12 +184,12 @@ defmodule OXCTest do
 
       imports =
         OXC.collect(ast, fn
-          %{type: "ImportDeclaration"} = node -> {:keep, node}
+          %{type: :import_declaration} = node -> {:keep, node}
           _ -> :skip
         end)
 
       assert length(imports) == 2
-      assert Enum.all?(imports, &(&1.type == "ImportDeclaration"))
+      assert Enum.all?(imports, &(&1.type == :import_declaration))
     end
 
     test "collects identifiers" do
@@ -159,7 +197,7 @@ defmodule OXCTest do
 
       names =
         OXC.collect(ast, fn
-          %{type: "Identifier", name: name} -> {:keep, name}
+          %{type: :identifier, name: name} -> {:keep, name}
           _ -> :skip
         end)
 
@@ -173,7 +211,7 @@ defmodule OXCTest do
 
       result =
         OXC.collect(ast, fn
-          %{type: "ImportDeclaration"} = node -> {:keep, node}
+          %{type: :import_declaration} = node -> {:keep, node}
           _ -> :skip
         end)
 
@@ -388,9 +426,155 @@ defmodule OXCTest do
     end
   end
 
+  describe "collect_imports/2" do
+    test "collects static imports with type info" do
+      source = "import { ref } from 'vue'\nimport a from './utils'"
+      {:ok, imports} = OXC.collect_imports(source, "test.js")
+
+      assert length(imports) == 2
+
+      [vue_import, utils_import] = imports
+      assert vue_import.specifier == "vue"
+      assert vue_import.type == :static
+      assert vue_import.kind == :import
+
+      assert utils_import.specifier == "./utils"
+      assert utils_import.type == :static
+      assert utils_import.kind == :import
+    end
+
+    test "collects export declarations" do
+      source = "export { foo } from './foo'\nexport * from './bar'"
+      {:ok, imports} = OXC.collect_imports(source, "test.js")
+
+      assert length(imports) == 2
+
+      [named_export, all_export] = imports
+      assert named_export.specifier == "./foo"
+      assert named_export.kind == :export
+
+      assert all_export.specifier == "./bar"
+      assert all_export.kind == :export_all
+    end
+
+    test "collects dynamic imports" do
+      source = "const m = import('./lazy')"
+      {:ok, imports} = OXC.collect_imports(source, "test.js")
+
+      assert [%{specifier: "./lazy", type: :dynamic, kind: :import}] = imports
+    end
+
+    test "excludes type-only imports" do
+      source = "import type { Ref } from 'vue'\nimport { ref } from 'vue'"
+      {:ok, imports} = OXC.collect_imports(source, "test.ts")
+
+      assert length(imports) == 1
+      assert hd(imports).specifier == "vue"
+    end
+
+    test "includes start/end positions" do
+      source = "import { ref } from 'vue'"
+      {:ok, [import]} = OXC.collect_imports(source, "test.js")
+
+      assert import.start > 0
+      assert import.end > import.start
+      assert binary_part(source, import.start, import.end - import.start) == "'vue'"
+    end
+
+    test "handles mixed static and dynamic imports" do
+      source = """
+      import { ref } from 'vue'
+      export { foo } from './foo'
+      const lazy = import('./lazy')
+      """
+
+      {:ok, imports} = OXC.collect_imports(source, "test.js")
+      assert length(imports) == 3
+
+      types = Enum.map(imports, & &1.type)
+      assert :static in types
+      assert :dynamic in types
+    end
+
+    test "returns errors for invalid syntax" do
+      {:error, errors} = OXC.collect_imports("const = ;", "bad.js")
+      assert is_list(errors)
+      assert length(errors) > 0
+    end
+  end
+
+  describe "rewrite_specifiers/3" do
+    test "rewrites matching specifiers" do
+      source = "import { ref } from 'vue'\nimport a from './utils'"
+
+      {:ok, result} =
+        OXC.rewrite_specifiers(source, "test.js", fn
+          "vue" -> {:rewrite, "/@vendor/vue.js"}
+          _ -> :keep
+        end)
+
+      assert result == "import { ref } from '/@vendor/vue.js'\nimport a from './utils'"
+    end
+
+    test "handles export declarations" do
+      source = "export { foo } from './foo'\nexport * from './bar'"
+
+      {:ok, result} =
+        OXC.rewrite_specifiers(source, "test.js", fn
+          "./foo" -> {:rewrite, "./foo.js"}
+          "./bar" -> {:rewrite, "./bar.js"}
+          _ -> :keep
+        end)
+
+      assert result == "export { foo } from './foo.js'\nexport * from './bar.js'"
+    end
+
+    test "handles dynamic imports" do
+      source = "const m = import('./lazy')"
+
+      {:ok, result} =
+        OXC.rewrite_specifiers(source, "test.js", fn
+          "./lazy" -> {:rewrite, "./lazy.js"}
+          _ -> :keep
+        end)
+
+      assert result == "const m = import('./lazy.js')"
+    end
+
+    test "keeps all when callback returns :keep" do
+      source = "import { ref } from 'vue'"
+
+      {:ok, result} =
+        OXC.rewrite_specifiers(source, "test.js", fn _ -> :keep end)
+
+      assert result == source
+    end
+
+    test "returns errors for invalid syntax" do
+      {:error, errors} =
+        OXC.rewrite_specifiers("const = ;", "bad.js", fn _ -> :keep end)
+
+      assert is_list(errors)
+    end
+
+    test "rewrites multiple specifiers" do
+      source = "import { ref } from 'vue'\nimport { h } from 'preact'"
+
+      {:ok, result} =
+        OXC.rewrite_specifiers(source, "test.js", fn
+          "vue" -> {:rewrite, "/@vendor/vue.js"}
+          "preact" -> {:rewrite, "/@vendor/preact.js"}
+          _ -> :keep
+        end)
+
+      assert result =~ "/@vendor/vue.js"
+      assert result =~ "/@vendor/preact.js"
+    end
+  end
+
   defp collect_identifiers(ast) do
     OXC.collect(ast, fn
-      %{type: "Identifier", name: name} -> {:keep, name}
+      %{type: :identifier, name: name} -> {:keep, name}
       _ -> :skip
     end)
   end
@@ -408,9 +592,9 @@ defmodule OXCTest do
       result = :ets.tab2list(types) |> Enum.map(&elem(&1, 0))
       :ets.delete(types)
 
-      assert "Program" in result
-      assert "VariableDeclaration" in result
-      assert "Identifier" in result
+      assert :program in result
+      assert :variable_declaration in result
+      assert :identifier in result
     end
 
     test "returns modified tree" do
@@ -418,13 +602,26 @@ defmodule OXCTest do
 
       result =
         OXC.postwalk(ast, fn
-          %{type: "Identifier", name: "x"} = node -> %{node | name: "y"}
+          %{type: :identifier, name: "x"} = node -> %{node | name: "y"}
           node -> node
         end)
 
       [decl] = result.body
       [declarator] = decl.declarations
       assert declarator.id.name == "y"
+    end
+
+    test "handles list of nodes" do
+      {:ok, ast} = OXC.parse("const x = 1; const y = 2;", "test.js")
+
+      result =
+        OXC.postwalk(ast.body, fn
+          %{type: :identifier, name: "x"} = node -> %{node | name: "a"}
+          node -> node
+        end)
+
+      assert is_list(result)
+      assert length(result) == 2
     end
   end
 
@@ -434,7 +631,7 @@ defmodule OXCTest do
 
       {_ast, names} =
         OXC.postwalk(ast, [], fn
-          %{type: "Identifier", name: name} = node, acc -> {node, [name | acc]}
+          %{type: :identifier, name: name} = node, acc -> {node, [name | acc]}
           node, acc -> {node, acc}
         end)
 
@@ -447,7 +644,7 @@ defmodule OXCTest do
 
       {_ast, patches} =
         OXC.postwalk(ast, [], fn
-          %{type: "ImportDeclaration", source: %{value: "vue"} = src} = node, patches ->
+          %{type: :import_declaration, source: %{value: "vue"} = src} = node, patches ->
             {node, [%{start: src.start, end: src.end, change: "'/@vendor/vue.js'"} | patches]}
 
           node, patches ->
@@ -456,6 +653,20 @@ defmodule OXCTest do
 
       assert OXC.patch_string(source, patches) ==
                "import { ref } from '/@vendor/vue.js'\nimport a from './utils'"
+    end
+
+    test "handles list of nodes with accumulator" do
+      {:ok, ast} = OXC.parse("const x = 1; const y = 2;", "test.js")
+
+      {result, names} =
+        OXC.postwalk(ast.body, [], fn
+          %{type: :identifier, name: name} = node, acc -> {node, [name | acc]}
+          node, acc -> {node, acc}
+        end)
+
+      assert is_list(result)
+      assert "x" in names
+      assert "y" in names
     end
   end
 

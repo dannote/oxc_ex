@@ -8,13 +8,15 @@ defmodule OXC do
 
       iex> {:ok, ast} = OXC.parse("const x = 1 + 2", "test.js")
       iex> ast.type
-      "Program"
+      :program
 
       iex> {:ok, js} = OXC.transform("const x: number = 42", "test.ts")
       iex> js
       "const x = 42;\\n"
 
   AST nodes are maps with atom keys, following the ESTree specification.
+  The `:type` and `:kind` field values are snake_case atoms
+  (e.g. `:import_declaration`, `:variable_declaration`).
   """
 
   @type ast :: map()
@@ -41,7 +43,7 @@ defmodule OXC do
       iex> {:ok, ast} = OXC.parse("const x = 1", "test.js")
       iex> [decl] = ast.body
       iex> decl.type
-      "VariableDeclaration"
+      :variable_declaration
 
       iex> {:error, [%{message: msg} | _]} = OXC.parse("const = ;", "bad.js")
       iex> is_binary(msg)
@@ -62,7 +64,7 @@ defmodule OXC do
 
       iex> ast = OXC.parse!("const x = 1", "test.js")
       iex> ast.type
-      "Program"
+      :program
   """
   @spec parse!(String.t(), String.t()) :: ast()
   def parse!(source, filename) do
@@ -208,6 +210,110 @@ defmodule OXC do
   end
 
   @doc """
+  Analyze imports with type information.
+
+  Returns `{:ok, list}` where each element is a map with:
+    * `:specifier` — the import source string (e.g. `"vue"`, `"./utils"`)
+    * `:type` — `:static` or `:dynamic`
+    * `:kind` — `:import`, `:export`, or `:export_all`
+    * `:start` — byte offset of the specifier string literal (including quote)
+    * `:end` — byte offset of the end of the specifier string literal
+
+  Type-only imports/exports (`import type { ... }`, `export type { ... }`)
+  are excluded.
+
+  ## Examples
+
+      iex> source = "import { ref } from 'vue'\\nexport { foo } from './bar'\\nimport('./lazy')"
+      iex> {:ok, imports} = OXC.collect_imports(source, "test.js")
+      iex> Enum.map(imports, & &1.specifier)
+      ["vue", "./bar", "./lazy"]
+      iex> Enum.map(imports, & &1.type)
+      [:static, :static, :dynamic]
+      iex> Enum.map(imports, & &1.kind)
+      [:import, :export, :import]
+  """
+  @spec collect_imports(String.t(), String.t()) ::
+          {:ok,
+           [
+             %{
+               specifier: String.t(),
+               type: :static | :dynamic,
+               kind: :import | :export | :export_all,
+               start: non_neg_integer(),
+               end: non_neg_integer()
+             }
+           ]}
+          | {:error, [String.t()]}
+  def collect_imports(source, filename) do
+    OXC.Native.collect_imports(source, filename)
+  end
+
+  @doc "Like `collect_imports/2` but raises on errors."
+  @spec collect_imports!(String.t(), String.t()) :: [map()]
+  def collect_imports!(source, filename) do
+    case collect_imports(source, filename) do
+      {:ok, list} -> list
+      {:error, errors} -> raise "OXC collect_imports error: #{inspect(errors)}"
+    end
+  end
+
+  @doc """
+  Rewrite import/export specifiers in a single pass.
+
+  Parses the source, finds all import/export declarations
+  (ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration,
+  and dynamic ImportExpression), and calls `fun` with each specifier string.
+
+  The callback returns:
+    * `{:rewrite, new_specifier}` — replace the specifier
+    * `:keep` — leave unchanged
+
+  Returns `{:ok, patched_source}` or `{:error, errors}`.
+
+  ## Examples
+
+      iex> source = "import { ref } from 'vue'\\nimport a from './utils'"
+      iex> {:ok, result} = OXC.rewrite_specifiers(source, "test.js", fn
+      ...>   "vue" -> {:rewrite, "/@vendor/vue.js"}
+      ...>   _ -> :keep
+      ...> end)
+      iex> result
+      "import { ref } from '/@vendor/vue.js'\\nimport a from './utils'"
+  """
+  @spec rewrite_specifiers(String.t(), String.t(), (String.t() -> {:rewrite, String.t()} | :keep)) ::
+          {:ok, String.t()} | {:error, [String.t()]}
+  def rewrite_specifiers(source, filename, fun) when is_function(fun, 1) do
+    case collect_imports(source, filename) do
+      {:ok, imports} ->
+        patches =
+          Enum.reduce(imports, [], fn %{specifier: spec, start: s, end: e}, acc ->
+            case fun.(spec) do
+              {:rewrite, new} -> [%{start: s + 1, end: e - 1, change: new} | acc]
+              :keep -> acc
+            end
+          end)
+
+        {:ok, patch_string(source, patches)}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @doc """
+  Like `rewrite_specifiers/3` but raises on errors.
+  """
+  @spec rewrite_specifiers!(String.t(), String.t(), (String.t() -> {:rewrite, String.t()} | :keep)) ::
+          String.t()
+  def rewrite_specifiers!(source, filename, fun) do
+    case rewrite_specifiers(source, filename, fun) do
+      {:ok, result} -> result
+      {:error, errors} -> raise "OXC rewrite_specifiers error: #{inspect(errors)}"
+    end
+  end
+
+  @doc """
   Bundle multiple TypeScript/JavaScript modules into a single IIFE script.
 
   Takes a list of `{filename, source}` tuples representing a virtual project.
@@ -222,6 +328,8 @@ defmodule OXC do
     * `:minify` — minify the output (default: `false`)
     * `:banner` — string to prepend before the IIFE (e.g. `"/* v1.0 */"`)
     * `:footer` — string to append after the IIFE
+    * `:preamble` — code to inject at the top of the IIFE function body,
+      before any bundled modules (e.g. `"const { ref } = Vue;"`)
     * `:define` — compile-time replacements, map of `%{"process.env.NODE_ENV" => ~s("production")}`
     * `:sourcemap` — generate a source map (default: `false`). When `true`,
       returns `%{code: String.t(), sourcemap: String.t()}` instead of a plain string.
@@ -291,6 +399,7 @@ defmodule OXC do
       "minify" => Keyword.get(opts, :minify, false),
       "banner" => Keyword.get(opts, :banner),
       "footer" => Keyword.get(opts, :footer),
+      "preamble" => Keyword.get(opts, :preamble),
       "define" => Keyword.get(opts, :define, %{}),
       "sourcemap" => Keyword.get(opts, :sourcemap, false),
       "drop_console" => Keyword.get(opts, :drop_console, false),
@@ -312,29 +421,45 @@ defmodule OXC do
   defp atomize_term_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} ->
       atom_key = if is_binary(key), do: String.to_atom(key), else: key
-      {atom_key, atomize_term_keys(value)}
+      {atom_key, atomize_value(atom_key, value)}
     end)
   end
 
   defp atomize_term_keys(list) when is_list(list), do: Enum.map(list, &atomize_term_keys/1)
   defp atomize_term_keys(value), do: value
 
+  defp atomize_value(:type, value) when is_binary(value), do: to_snake_atom(value)
+  defp atomize_value(:kind, value) when is_binary(value), do: to_snake_atom(value)
+  defp atomize_value(_key, value), do: atomize_term_keys(value)
+
+  defp to_snake_atom(value) do
+    value
+    |> String.replace(~r/([A-Z]+)([A-Z][a-z])/, "\\1_\\2")
+    |> String.replace(~r/([a-z0-9])([A-Z])/, "\\1_\\2")
+    |> String.downcase()
+    |> String.to_atom()
+  end
+
   # ── AST Traversal ──
 
   @doc """
-  Walk an AST tree, calling `fun` on every node (any map with a `type` key).
+  Walk an AST tree, calling `fun` on every node (any map with a `:type` key).
 
   ## Examples
 
       iex> {:ok, ast} = OXC.parse("const x = 1", "test.js")
       iex> OXC.walk(ast, fn
-      ...>   %{type: "Identifier", name: name} -> send(self(), {:id, name})
+      ...>   %{type: :identifier, name: name} -> send(self(), {:id, name})
       ...>   _ -> :ok
       ...> end)
       iex> receive do {:id, name} -> name end
       "x"
   """
-  @spec walk(ast(), (map() -> any())) :: :ok
+  @spec walk(ast() | [ast()], (map() -> any())) :: :ok
+  def walk(nodes, fun) when is_list(nodes) do
+    Enum.each(nodes, &walk(&1, fun))
+  end
+
   def walk(node, fun) when is_map(node) do
     if Map.has_key?(node, :type), do: fun.(node)
 
@@ -359,17 +484,26 @@ defmodule OXC do
   first, then the node itself. The callback returns the (possibly modified)
   node.
 
+  Accepts a single AST node or a list of nodes.
+
   ## Examples
 
       iex> {:ok, ast} = OXC.parse("const x = 1", "test.js")
       iex> OXC.postwalk(ast, fn
-      ...>   %{type: "Identifier", name: "x"} = node -> %{node | name: "y"}
+      ...>   %{type: :identifier, name: "x"} = node -> %{node | name: "y"}
       ...>   node -> node
       ...> end)
       iex> :ok
       :ok
   """
-  @spec postwalk(ast(), (map() -> map())) :: map()
+  @spec postwalk(ast() | [ast()], (map() -> map())) :: map() | [map()]
+  def postwalk(nodes, fun) when is_list(nodes) and is_function(fun, 1) do
+    Enum.map(nodes, fn
+      n when is_map(n) -> postwalk(n, fun)
+      n -> n
+    end)
+  end
+
   def postwalk(node, fun) when is_map(node) and is_function(fun, 1) do
     updated =
       Map.new(node, fn
@@ -390,7 +524,7 @@ defmodule OXC do
     if Map.has_key?(updated, :type), do: fun.(updated), else: updated
   end
 
-  def postwalk(node, _fun) when not is_map(node), do: node
+  def postwalk(node, _fun), do: node
 
   @doc """
   Depth-first post-order traversal with accumulator, like `Macro.postwalk/3`.
@@ -398,12 +532,14 @@ defmodule OXC do
   The callback receives each AST node and the accumulator, and must return
   `{node, acc}`. Use this to collect data while traversing.
 
+  Accepts a single AST node or a list of nodes.
+
   ## Examples
 
       iex> source = "import { ref } from 'vue'\\nimport a from './utils'"
       iex> {:ok, ast} = OXC.parse(source, "test.ts")
       iex> {_ast, patches} = OXC.postwalk(ast, [], fn
-      ...>   %{type: "ImportDeclaration", source: %{value: "vue"} = src} = node, patches ->
+      ...>   %{type: :import_declaration, source: %{value: "vue"} = src} = node, patches ->
       ...>     {node, [%{start: src.start, end: src.end, change: "'/@vendor/vue.js'"} | patches]}
       ...>   node, patches ->
       ...>     {node, patches}
@@ -411,7 +547,15 @@ defmodule OXC do
       iex> OXC.patch_string(source, patches)
       "import { ref } from '/@vendor/vue.js'\\nimport a from './utils'"
   """
-  @spec postwalk(ast(), acc, (map(), acc -> {map(), acc})) :: {map(), acc} when acc: term()
+  @spec postwalk(ast() | [ast()], acc, (map(), acc -> {map(), acc})) :: {map() | [map()], acc}
+        when acc: term()
+  def postwalk(nodes, acc, fun) when is_list(nodes) and is_function(fun, 2) do
+    Enum.map_reduce(nodes, acc, fn
+      node, a when is_map(node) -> postwalk(node, a, fun)
+      node, a -> {node, a}
+    end)
+  end
+
   def postwalk(node, acc, fun) when is_map(node) and is_function(fun, 2) do
     {updated, acc} =
       Enum.reduce(Map.keys(node), {node, acc}, fn key, {n, a} ->
@@ -442,38 +586,52 @@ defmodule OXC do
   @doc """
   Collect AST nodes that match a filter function.
 
-  The function receives each node (map with `type` key) and should return
+  The function receives each node (map with `:type` key) and should return
   `{:keep, value}` to include it in results, or `:skip` to exclude it.
 
   ## Examples
 
       iex> {:ok, ast} = OXC.parse("const x = y + z", "test.js")
       iex> OXC.collect(ast, fn
-      ...>   %{type: "Identifier", name: name} -> {:keep, name}
+      ...>   %{type: :identifier, name: name} -> {:keep, name}
       ...>   _ -> :skip
       ...> end)
       ["x", "y", "z"]
   """
   @spec collect(ast(), (map() -> {:keep, any()} | :skip)) :: [any()]
   def collect(node, fun) do
-    acc = :ets.new(:oxc_collect, [:set, :private])
-
-    try do
-      walk(node, fn n ->
-        case fun.(n) do
-          {:keep, value} -> :ets.insert(acc, {:erlang.unique_integer([:monotonic]), value})
-          :skip -> :ok
-        end
-      end)
-
-      acc
-      |> :ets.tab2list()
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map(&elem(&1, 1))
-    after
-      :ets.delete(acc)
-    end
+    node
+    |> do_collect(fun, [])
+    |> Enum.reverse()
   end
+
+  defp do_collect(node, fun, acc) when is_map(node) do
+    acc =
+      if Map.has_key?(node, :type) do
+        case fun.(node) do
+          {:keep, value} -> [value | acc]
+          :skip -> acc
+        end
+      else
+        acc
+      end
+
+    Enum.reduce(Map.values(node), acc, fn
+      child, a when is_map(child) ->
+        do_collect(child, fun, a)
+
+      children, a when is_list(children) ->
+        Enum.reduce(children, a, &do_collect_child(&1, fun, &2))
+
+      _, a ->
+        a
+    end)
+  end
+
+  defp do_collect(_node, _fun, acc), do: acc
+
+  defp do_collect_child(node, fun, acc) when is_map(node), do: do_collect(node, fun, acc)
+  defp do_collect_child(_node, _fun, acc), do: acc
 
   # ── Source Patching ──
 
@@ -485,6 +643,9 @@ defmodule OXC do
   Each patch is a map with `:start` (byte offset), `:end` (byte offset),
   and `:change` (replacement string). Patches are applied in reverse
   offset order so that earlier patches don't shift later offsets.
+
+  When multiple patches target the same `{start, end}` range, only the
+  first one is applied and duplicates are silently dropped.
 
   Use with `postwalk/3` to collect patches from the AST, then apply
   them to the original source string.

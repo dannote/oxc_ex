@@ -7,7 +7,7 @@ use oxc95::minifier::{
     MangleOptionsKeepNames as RolldownMangleOptionsKeepNames,
 };
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{ImportOrExportKind, Statement};
+use oxc_ast::ast::{Expression, ImportOrExportKind, Statement};
 use oxc_codegen::{Codegen, CodegenOptions, CodegenReturn};
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_minifier::{CompressOptions, MangleOptions, Minifier, MinifierOptions};
@@ -32,6 +32,16 @@ mod atoms {
     rustler::atoms! {
         ok,
         error,
+        specifier,
+        atom_type = "type",
+        kind,
+        start,
+        atom_end = "end",
+        atom_static = "static",
+        dynamic,
+        import,
+        export,
+        export_all,
     }
 }
 
@@ -301,6 +311,286 @@ fn imports<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'a>
     encode_ok(env, specifiers)
 }
 
+struct ImportInfo {
+    specifier: String,
+    import_type: ImportType,
+    kind: ImportKind,
+    start: u32,
+    end: u32,
+}
+
+enum ImportType {
+    Static,
+    Dynamic,
+}
+
+enum ImportKind {
+    Import,
+    Export,
+    ExportAll,
+}
+
+impl Encoder for ImportInfo {
+    fn encode<'a>(&self, env: Env<'a>) -> Term<'a> {
+        rustler::Term::map_new(env)
+            .map_put(atoms::specifier().encode(env), self.specifier.encode(env))
+            .unwrap()
+            .map_put(
+                atoms::atom_type().encode(env),
+                match self.import_type {
+                    ImportType::Static => atoms::atom_static().encode(env),
+                    ImportType::Dynamic => atoms::dynamic().encode(env),
+                },
+            )
+            .unwrap()
+            .map_put(
+                atoms::kind().encode(env),
+                match self.kind {
+                    ImportKind::Import => atoms::import().encode(env),
+                    ImportKind::Export => atoms::export().encode(env),
+                    ImportKind::ExportAll => atoms::export_all().encode(env),
+                },
+            )
+            .unwrap()
+            .map_put(atoms::start().encode(env), self.start.encode(env))
+            .unwrap()
+            .map_put(atoms::atom_end().encode(env), self.end.encode(env))
+            .unwrap()
+    }
+}
+
+fn collect_imports_from_expression(expr: &Expression, results: &mut Vec<ImportInfo>) {
+    match expr {
+        Expression::ImportExpression(import_expr) => {
+            if let Expression::StringLiteral(lit) = &import_expr.source {
+                results.push(ImportInfo {
+                    specifier: lit.value.to_string(),
+                    import_type: ImportType::Dynamic,
+                    kind: ImportKind::Import,
+                    start: lit.span.start,
+                    end: lit.span.end,
+                });
+            }
+        }
+        Expression::SequenceExpression(seq) => {
+            for e in &seq.expressions {
+                collect_imports_from_expression(e, results);
+            }
+        }
+        Expression::ConditionalExpression(cond) => {
+            collect_imports_from_expression(&cond.test, results);
+            collect_imports_from_expression(&cond.consequent, results);
+            collect_imports_from_expression(&cond.alternate, results);
+        }
+        Expression::CallExpression(call) => {
+            collect_imports_from_expression(&call.callee, results);
+            for arg in &call.arguments {
+                if let Some(e) = arg.as_expression() {
+                    collect_imports_from_expression(e, results);
+                }
+            }
+        }
+        Expression::NewExpression(new_expr) => {
+            collect_imports_from_expression(&new_expr.callee, results);
+            for arg in &new_expr.arguments {
+                if let Some(e) = arg.as_expression() {
+                    collect_imports_from_expression(e, results);
+                }
+            }
+        }
+        Expression::AssignmentExpression(assign) => {
+            collect_imports_from_expression(&assign.right, results);
+        }
+        Expression::AwaitExpression(await_expr) => {
+            collect_imports_from_expression(&await_expr.argument, results);
+        }
+        Expression::LogicalExpression(logical) => {
+            collect_imports_from_expression(&logical.left, results);
+            collect_imports_from_expression(&logical.right, results);
+        }
+        Expression::BinaryExpression(binary) => {
+            collect_imports_from_expression(&binary.left, results);
+            collect_imports_from_expression(&binary.right, results);
+        }
+        Expression::UnaryExpression(unary) => {
+            collect_imports_from_expression(&unary.argument, results);
+        }
+        Expression::ParenthesizedExpression(paren) => {
+            collect_imports_from_expression(&paren.expression, results);
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            collect_imports_from_statements(&arrow.body.statements, results);
+        }
+        Expression::TemplateLiteral(_) => {}
+        Expression::TaggedTemplateExpression(tagged) => {
+            collect_imports_from_expression(&tagged.tag, results);
+        }
+        Expression::ComputedMemberExpression(member) => {
+            collect_imports_from_expression(&member.object, results);
+            collect_imports_from_expression(&member.expression, results);
+        }
+        Expression::StaticMemberExpression(member) => {
+            collect_imports_from_expression(&member.object, results);
+        }
+        Expression::ObjectExpression(obj) => {
+            for prop in &obj.properties {
+                match prop {
+                    oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
+                        collect_imports_from_expression(&p.value, results);
+                    }
+                    oxc_ast::ast::ObjectPropertyKind::SpreadProperty(spread) => {
+                        collect_imports_from_expression(&spread.argument, results);
+                    }
+                }
+            }
+        }
+        Expression::ArrayExpression(arr) => {
+            for elem in &arr.elements {
+                match elem {
+                    oxc_ast::ast::ArrayExpressionElement::SpreadElement(spread) => {
+                        collect_imports_from_expression(&spread.argument, results);
+                    }
+                    _ => {
+                        if let Some(e) = elem.as_expression() {
+                            collect_imports_from_expression(e, results);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_imports_from_statement(stmt: &Statement, results: &mut Vec<ImportInfo>) {
+    collect_imports_from_statements(std::slice::from_ref(stmt), results);
+}
+
+fn collect_imports_from_statements(stmts: &[Statement], results: &mut Vec<ImportInfo>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::ImportDeclaration(decl) => {
+                if decl.import_kind != ImportOrExportKind::Type {
+                    results.push(ImportInfo {
+                        specifier: decl.source.value.to_string(),
+                        import_type: ImportType::Static,
+                        kind: ImportKind::Import,
+                        start: decl.source.span.start,
+                        end: decl.source.span.end,
+                    });
+                }
+            }
+            Statement::ExportNamedDeclaration(decl) => {
+                if decl.export_kind != ImportOrExportKind::Type {
+                    if let Some(source) = &decl.source {
+                        results.push(ImportInfo {
+                            specifier: source.value.to_string(),
+                            import_type: ImportType::Static,
+                            kind: ImportKind::Export,
+                            start: source.span.start,
+                            end: source.span.end,
+                        });
+                    }
+                }
+            }
+            Statement::ExportAllDeclaration(decl) => {
+                if decl.export_kind != ImportOrExportKind::Type {
+                    results.push(ImportInfo {
+                        specifier: decl.source.value.to_string(),
+                        import_type: ImportType::Static,
+                        kind: ImportKind::ExportAll,
+                        start: decl.source.span.start,
+                        end: decl.source.span.end,
+                    });
+                }
+            }
+            Statement::ExpressionStatement(expr_stmt) => {
+                collect_imports_from_expression(&expr_stmt.expression, results);
+            }
+            Statement::VariableDeclaration(var_decl) => {
+                for declarator in &var_decl.declarations {
+                    if let Some(init) = &declarator.init {
+                        collect_imports_from_expression(init, results);
+                    }
+                }
+            }
+            Statement::ReturnStatement(ret) => {
+                if let Some(arg) = &ret.argument {
+                    collect_imports_from_expression(arg, results);
+                }
+            }
+            Statement::IfStatement(if_stmt) => {
+                collect_imports_from_statement(&if_stmt.consequent, results);
+                if let Some(alt) = &if_stmt.alternate {
+                    collect_imports_from_statement(alt, results);
+                }
+            }
+            Statement::BlockStatement(block) => {
+                collect_imports_from_statements(&block.body, results);
+            }
+            Statement::FunctionDeclaration(func) => {
+                if let Some(body) = &func.body {
+                    collect_imports_from_statements(&body.statements, results);
+                }
+            }
+            Statement::SwitchStatement(switch) => {
+                for case in &switch.cases {
+                    collect_imports_from_statements(&case.consequent, results);
+                }
+            }
+            Statement::TryStatement(try_stmt) => {
+                collect_imports_from_statements(&try_stmt.block.body, results);
+                if let Some(handler) = &try_stmt.handler {
+                    collect_imports_from_statements(&handler.body.body, results);
+                }
+                if let Some(finalizer) = &try_stmt.finalizer {
+                    collect_imports_from_statements(&finalizer.body, results);
+                }
+            }
+            Statement::ForStatement(for_stmt) => {
+                collect_imports_from_statement(&for_stmt.body, results);
+            }
+            Statement::ForInStatement(for_in) => {
+                collect_imports_from_statement(&for_in.body, results);
+            }
+            Statement::ForOfStatement(for_of) => {
+                collect_imports_from_statement(&for_of.body, results);
+            }
+            Statement::WhileStatement(while_stmt) => {
+                collect_imports_from_statement(&while_stmt.body, results);
+            }
+            Statement::ExportDefaultDeclaration(decl) => {
+                if let oxc_ast::ast::ExportDefaultDeclarationKind::FunctionDeclaration(func) =
+                    &decl.declaration
+                {
+                    if let Some(body) = &func.body {
+                        collect_imports_from_statements(&body.statements, results);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn collect_imports<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'a>> {
+    let allocator = Allocator::default();
+    let source_type = SourceType::from_path(filename).unwrap_or_default();
+    let ret = Parser::new(&allocator, source, source_type)
+        .with_options(parser_options())
+        .parse();
+
+    if !ret.errors.is_empty() {
+        return error_messages_to_term(env, &format_errors(&ret.errors));
+    }
+
+    let mut results: Vec<ImportInfo> = Vec::new();
+    collect_imports_from_statements(&ret.program.body, &mut results);
+
+    Ok((atoms::ok(), results).encode(env))
+}
+
 fn default_jsx_runtime() -> String {
     "automatic".to_string()
 }
@@ -318,6 +608,7 @@ struct BundleOptions {
     minify: bool,
     banner: Option<String>,
     footer: Option<String>,
+    preamble: Option<String>,
     define: BTreeMap<String, String>,
     sourcemap: bool,
     drop_console: bool,
@@ -535,6 +826,28 @@ fn relativize_sourcemap_sources(sourcemap_json: String, cwd: &Path) -> Result<St
         .map_err(|error| vec![format!("Failed to serialize Rolldown source map: {error}")])
 }
 
+fn inject_preamble(code: &str, preamble: &str) -> String {
+    if let Some(pos) = code.find("(function() {") {
+        let insert_at = pos + "(function() {".len();
+        let mut result = String::with_capacity(code.len() + preamble.len() + 2);
+        result.push_str(&code[..insert_at]);
+        result.push('\n');
+        result.push_str(preamble);
+        result.push_str(&code[insert_at..]);
+        result
+    } else if let Some(pos) = code.find("(function () {") {
+        let insert_at = pos + "(function () {".len();
+        let mut result = String::with_capacity(code.len() + preamble.len() + 2);
+        result.push_str(&code[..insert_at]);
+        result.push('\n');
+        result.push_str(preamble);
+        result.push_str(&code[insert_at..]);
+        result
+    } else {
+        format!("{preamble}\n{code}")
+    }
+}
+
 fn build_bundle_options(
     cwd: &Path,
     entry_name: String,
@@ -629,6 +942,14 @@ fn bundle_with_rolldown(
         })
         .ok_or_else(|| vec!["Rolldown did not produce a JavaScript bundle".to_string()])?;
 
+    let mut code = chunk.code.clone();
+
+    if let Some(preamble) = &opts.preamble {
+        if !preamble.is_empty() {
+            code = inject_preamble(&code, preamble);
+        }
+    }
+
     let sourcemap = if opts.sourcemap {
         let sourcemap_json = chunk
             .map
@@ -640,7 +961,7 @@ fn bundle_with_rolldown(
         None
     };
 
-    Ok((chunk.code.clone(), sourcemap))
+    Ok((code, sourcemap))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

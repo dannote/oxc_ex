@@ -235,6 +235,27 @@ defmodule OXC.BundleTest do
       assert String.ends_with?(String.trim(js), "/* bottom */")
     end
 
+    test "preamble injects code at the top of IIFE body" do
+      files = [{"a.ts", "const x = 1; (globalThis as any).x = x;"}]
+
+      {:ok, js} =
+        OXC.bundle(files, entry: "a.ts", preamble: "const { ref } = Vue;")
+
+      assert_valid_bundle(js)
+      assert js =~ "const { ref } = Vue;"
+      iife_start = js |> String.split("const { ref } = Vue;") |> hd()
+      assert iife_start =~ "function"
+    end
+
+    test "preamble works with minification" do
+      files = [{"a.ts", "const x = 1; (globalThis as any).x = x;"}]
+
+      {:ok, js} =
+        OXC.bundle(files, entry: "a.ts", preamble: "const { ref } = Vue;", minify: true)
+
+      assert js =~ "Vue"
+    end
+
     test "define replaces identifiers" do
       files = [{"a.ts", "const env = process.env.NODE_ENV; (globalThis as any).env = env;"}]
 
