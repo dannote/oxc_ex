@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.0
+
+### Breaking changes
+
+- AST `:type` and `:kind` values are now snake_case atoms instead of strings.
+  `"ImportDeclaration"` → `:import_declaration`, `"const"` → `:const`, etc.
+  Migration: update all pattern matches from `%{type: "ImportDeclaration"}` to `%{type: :import_declaration}`.
+- All error tuples now return `{:error, [%{message: String.t()}]}` consistently.
+  Previously `transform`, `minify`, `imports`, and `bundle` returned `{:error, [String.t()]}`.
+- Bang functions (`parse!`, `transform!`, `minify!`, `bundle!`, etc.) now raise `OXC.Error` instead of `RuntimeError`.
+  The exception has an `:errors` field with the structured error list.
+
+### Added
+
+- `OXC.collect_imports/2` — analyze imports with type info (`:static`/`:dynamic`), kind (`:import`/`:export`/`:export_all`), and byte offsets. Powered by a Rust NIF using OXC's visitor pattern.
+- `OXC.rewrite_specifiers/3` — rewrite import/export specifiers in a single pass without Elixir-side AST walking.
+- `:preamble` option for `bundle/2` — inject code at the top of the IIFE function body.
+- `:treeshake` option for `bundle/2` — enable tree-shaking (default: `false`).
+- `walk/2`, `postwalk/2`, `postwalk/3` now accept a list of nodes at the root level.
+- `OXC.Error` exception module.
+
+### Changed
+
+- `collect/2` uses a recursive accumulator instead of creating an ETS table per call.
+- `to_snake_atom` uses `Macro.underscore/1` instead of hand-rolled regex.
+- `@type ast` tightened to `%{required(:type) => atom(), optional(atom()) => any()}`.
+- `patch_string/2` deduplication behavior is now documented.
+- Rust NIF split from a single 800-line `lib.rs` into `parse.rs`, `imports.rs`, `bundle.rs`, `options.rs`, `error.rs`.
+- Import collector rewritten with `oxc_ast_visit::Visit` trait (~50 lines) replacing a hand-rolled 250-line AST walker.
+- Bundle chunk selection no longer falls through to arbitrary chunks.
+
 ## 0.6.2
 
 - Fix absolute temp dir paths leaking into `#region` comments in bundled output
