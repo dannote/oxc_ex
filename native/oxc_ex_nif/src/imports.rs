@@ -4,37 +4,18 @@ use oxc_ast_visit::walk;
 use oxc_ast_visit::Visit;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
-use rustler::{Encoder, Env, NifResult, Term};
+use rustler::{Encoder, Env, NifMap, NifResult, Term};
 
 use crate::atoms;
 use crate::error::{error_to_term, format_errors};
 
+#[derive(NifMap)]
 struct ImportInfo {
     specifier: String,
-    import_type: rustler::Atom,
+    r#type: rustler::Atom,
     kind: rustler::Atom,
     start: u32,
-    end: u32,
-}
-
-impl Encoder for ImportInfo {
-    fn encode<'a>(&self, env: Env<'a>) -> Term<'a> {
-        let map = Term::map_new(env);
-        let map = map
-            .map_put(atoms::specifier().encode(env), self.specifier.encode(env))
-            .unwrap();
-        let map = map
-            .map_put(atoms::atom_type().encode(env), self.import_type.encode(env))
-            .unwrap();
-        let map = map
-            .map_put(atoms::kind().encode(env), self.kind.encode(env))
-            .unwrap();
-        let map = map
-            .map_put(atoms::start().encode(env), self.start.encode(env))
-            .unwrap();
-        map.map_put(atoms::atom_end().encode(env), self.end.encode(env))
-            .unwrap()
-    }
+    r#end: u32,
 }
 
 struct ImportCollector {
@@ -46,10 +27,10 @@ impl<'a> Visit<'a> for ImportCollector {
         if decl.import_kind != ImportOrExportKind::Type {
             self.imports.push(ImportInfo {
                 specifier: decl.source.value.to_string(),
-                import_type: atoms::atom_static(),
+                r#type: atoms::atom_static(),
                 kind: atoms::import(),
                 start: decl.source.span.start,
-                end: decl.source.span.end,
+                r#end: decl.source.span.end,
             });
         }
     }
@@ -59,10 +40,10 @@ impl<'a> Visit<'a> for ImportCollector {
             if let Some(source) = &decl.source {
                 self.imports.push(ImportInfo {
                     specifier: source.value.to_string(),
-                    import_type: atoms::atom_static(),
+                    r#type: atoms::atom_static(),
                     kind: atoms::export(),
                     start: source.span.start,
-                    end: source.span.end,
+                    r#end: source.span.end,
                 });
             }
         }
@@ -73,10 +54,10 @@ impl<'a> Visit<'a> for ImportCollector {
         if decl.export_kind != ImportOrExportKind::Type {
             self.imports.push(ImportInfo {
                 specifier: decl.source.value.to_string(),
-                import_type: atoms::atom_static(),
+                r#type: atoms::atom_static(),
                 kind: atoms::export_all(),
                 start: decl.source.span.start,
-                end: decl.source.span.end,
+                r#end: decl.source.span.end,
             });
         }
     }
@@ -85,10 +66,10 @@ impl<'a> Visit<'a> for ImportCollector {
         if let Expression::StringLiteral(lit) = &expr.source {
             self.imports.push(ImportInfo {
                 specifier: lit.value.to_string(),
-                import_type: atoms::dynamic(),
+                r#type: atoms::dynamic(),
                 kind: atoms::import(),
                 start: lit.span.start,
-                end: lit.span.end,
+                r#end: lit.span.end,
             });
         }
         walk::walk_import_expression(self, expr);

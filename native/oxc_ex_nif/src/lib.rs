@@ -8,11 +8,6 @@ mod atoms {
     rustler::atoms! {
         ok,
         error,
-        specifier,
-        atom_type = "type",
-        kind,
-        start,
-        atom_end = "end",
         atom_static = "static",
         dynamic,
         import,

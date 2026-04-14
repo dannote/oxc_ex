@@ -5,6 +5,9 @@ use rustler::Term;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
+// Routes through serde_json::Value because Rustler's serde deserializer
+// cannot handle string-keyed Elixir maps directly (atoms work, but the
+// Elixir side sends string keys for serde #[serde(rename)] compatibility).
 pub fn decode_options<T: DeserializeOwned + Default>(term: Term<'_>) -> T {
     from_term::<serde_json::Value>(term)
         .ok()
