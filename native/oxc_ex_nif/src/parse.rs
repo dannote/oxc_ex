@@ -77,7 +77,14 @@ pub fn parse<'a>(env: Env<'a>, source: &str, filename: &str) -> NifResult<Term<'
     // OXC's ESTree serializer outputs JSON strings via a custom compact serializer
     // (not standard serde::Serialize). Parsing back to Value is unavoidable without
     // writing a custom OXC-to-BEAM-term serializer.
-    let json = serde_json::from_str::<Value>(&ret.program.to_estree_ts_json(false)).unwrap();
+    let json_str = ret.program.to_estree_ts_json(false);
+    let mut deserializer = serde_json::Deserializer::from_str(&json_str);
+    deserializer.disable_recursion_limit();
+    let json: Value = match deserializer.into_iter().next() {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => return error_to_term(env, &[format!("Failed to deserialize ESTree JSON: {e}")]),
+        None => return error_to_term(env, &["Empty ESTree JSON output".to_string()]),
+    };
     encode_ok(env, json)
 }
 

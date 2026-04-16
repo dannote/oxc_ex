@@ -707,6 +707,15 @@ defmodule OXCTest do
     end
   end
 
+
+  describe "parse/2 recursion depth" do
+    test "handles deeply nested expressions without recursion limit" do
+      depth = 200
+      code = "const x = " <> String.duplicate("(", depth) <> "42" <> String.duplicate(")", depth) <> ";"
+      assert {:ok, %{"type" => "Program"}} = OXC.parse(code, "deep.js")
+    end
+  end
+
   defp collect_messages(tag) do
     collect_messages(tag, [])
   end

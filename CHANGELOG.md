@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+### Fixed
+
+- Fix `parse/2` hitting serde_json recursion limit on deeply nested ASTs (e.g. large bundled output from Vue + reka-ui). Uses streaming deserializer with unbounded depth.
+
 ## 0.7.0
 
 ### Breaking changes
