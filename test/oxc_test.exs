@@ -707,12 +707,57 @@ defmodule OXCTest do
     end
   end
 
+  describe "transform_many/2" do
+    test "transforms multiple files in parallel" do
+      results =
+        OXC.transform_many([
+          {"const x: number = 1", "a.ts"},
+          {"const y: number = 2", "b.ts"}
+        ])
+
+      assert [{:ok, code_a}, {:ok, code_b}] = results
+      assert code_a =~ "const x = 1"
+      assert code_b =~ "const y = 2"
+    end
+
+    test "handles JSX with shared options" do
+      results =
+        OXC.transform_many(
+          [{"const A = () => <div />", "a.tsx"}, {"const B = () => <span />", "b.tsx"}],
+          jsx: :classic
+        )
+
+      assert [{:ok, code_a}, {:ok, code_b}] = results
+      assert code_a =~ "createElement"
+      assert code_b =~ "createElement"
+    end
+
+    test "returns per-file errors without failing the batch" do
+      results =
+        OXC.transform_many([
+          {"const x = 1", "good.ts"},
+          {"const = ;", "bad.ts"},
+          {"const y = 2", "also_good.ts"}
+        ])
+
+      assert [{:ok, _}, {:error, errors}, {:ok, _}] = results
+      assert is_list(errors)
+    end
+
+    test "returns empty list for empty input" do
+      assert [] = OXC.transform_many([])
+    end
+  end
 
   describe "parse/2 recursion depth" do
     test "handles deeply nested expressions without recursion limit" do
       depth = 200
-      code = "const x = " <> String.duplicate("(", depth) <> "42" <> String.duplicate(")", depth) <> ";"
-      assert {:ok, %{"type" => "Program"}} = OXC.parse(code, "deep.js")
+
+      code =
+        "const x = " <>
+          String.duplicate("(", depth) <> "42" <> String.duplicate(")", depth) <> ";"
+
+      assert {:ok, %{type: :program}} = OXC.parse(code, "deep.js")
     end
   end
 

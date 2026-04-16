@@ -26,6 +26,7 @@ oxc95 = { package = "oxc", version = "=0.95.0" }
 oxc_resolver = "=11.10.0"
 rolldown = "=0.1.0"
 rolldown_common = "=0.1.0"
+rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }
 tempfile = "3"

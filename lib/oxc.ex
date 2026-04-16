@@ -156,6 +156,36 @@ defmodule OXC do
   end
 
   @doc """
+  Transform multiple source files in parallel using a Rust thread pool.
+
+  Accepts a list of `{source, filename}` tuples and shared options.
+  Returns a list of results in the same order, each being
+  `{:ok, code}`, `{:ok, %{code: ..., sourcemap: ...}}`, or `{:error, errors}`.
+
+  Significantly faster than calling `transform/3` sequentially for many files,
+  since work is distributed across OS threads without BEAM scheduling overhead.
+
+  ## Examples
+
+      iex> results = OXC.transform_many([{"const x: number = 1", "a.ts"}, {"const y: number = 2", "b.ts"}])
+      iex> length(results)
+      2
+      iex> {:ok, code} = hd(results)
+      iex> code =~ "const x = 1"
+      true
+  """
+  @spec transform_many([{String.t(), String.t()}], keyword()) :: [transform_result()]
+  def transform_many(inputs, opts \\ []) do
+    native_opts = normalize_transform_options(opts)
+
+    OXC.Native.transform_many(inputs, native_opts)
+    |> Enum.map(fn
+      {:ok, result} -> {:ok, normalize_native_result(result)}
+      {:error, errors} -> {:error, atomize_term_keys(errors)}
+    end)
+  end
+
+  @doc """
   Minify JavaScript source code.
 
   Applies dead code elimination, constant folding, and whitespace removal.

@@ -42,4 +42,7 @@ defmodule OXC.Native do
 
   @spec collect_imports(String.t(), String.t()) :: {:ok, [map()]} | {:error, [String.t()]}
   def collect_imports(_source, _filename), do: :erlang.nif_error(:nif_not_loaded)
+
+  @spec transform_many([{String.t(), String.t()}], map()) :: list()
+  def transform_many(_inputs, _opts), do: :erlang.nif_error(:nif_not_loaded)
 end
